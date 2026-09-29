@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>COPYCAT</title>
+<meta name="description" content="1 gegen 1 gegen einen Pantomimen, der jede deiner Bewegungen lernt.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bangers&family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- ============ HUD ============ -->
+<div id="hud" class="hidden">
+  <div id="crosshair"></div>
+  <div id="hitmarker"></div>
+  <div id="vignette"></div>
+  <div id="float-layer"></div>
+
+  <div id="hud-top">
+    <div class="hud-chip" id="hud-round">RUNDE 1</div>
+    <div class="hud-chip big" id="hud-timer">0:00</div>
+    <div class="hud-chip" id="hud-score">0</div>
+  </div>
+  <div id="flag-bar" class="hidden">
+    <div class="flag-side mango"><span>MANGO</span><div class="bar"><i id="flag-p"></i></div></div>
+    <div class="flag-icon">🚩</div>
+    <div class="flag-side cc"><div class="bar"><i id="flag-b"></i></div><span>COPYCAT</span></div>
+  </div>
+  <div id="center-msg"></div>
+
+  <div id="hud-bottom-left">
+    <div id="hp-wrap"><div id="hp-label">MANGO</div><div id="hp-bar"><i id="hp-fill"></i><b id="hp-heal"></b></div><div id="hp-num">100</div></div>
+    <div id="gear">
+      <div id="syringes" title="Spritzen"></div>
+      <div id="dashes" title="Dash"></div>
+    </div>
+  </div>
+  <div id="hud-bottom-right">
+    <div id="ammo"><span id="ammo-cur">20</span><span id="ammo-max">/ 20</span></div>
+    <div id="reload-hint" class="hidden">NACHLADEN [R]</div>
+  </div>
+  <div id="bot-hp"><div class="name">COPYCAT</div><div class="bar"><i id="bot-hp-fill"></i></div></div>
+
+  <div id="subtitles"></div>
+  <div id="killcam-tag" class="hidden">KILLCAM</div>
+  <div id="tutorial-box" class="hidden"></div>
+</div>
+
+<!-- ============ SCREENS ============ -->
+<div id="screen-start" class="screen">
+  <div class="title-wrap">
+    <h1 class="logo">COPY<span>CAT</span></h1>
+    <p class="tagline">Er beobachtet dich. Er lernt dich. Er <em>ist</em> bald du.</p>
+  </div>
+  <div class="menu">
+    <button class="btn primary" data-action="play">SPIELEN</button>
+    <button class="btn" data-action="tutorial">TUTORIAL</button>
+    <button class="btn" data-action="leaderboard">BESTENLISTE</button>
+    <button class="btn" data-action="settings">EINSTELLUNGEN</button>
+  </div>
+  <div id="start-best"></div>
+  <div class="footnote">Maus &amp; Tastatur · Kopfhörer empfohlen 🎧</div>
+</div>
+
+<div id="screen-pause" class="screen hidden dim">
+  <div class="panel">
+    <h2>PAUSE</h2>
+    <button class="btn primary" data-action="resume">WEITER</button>
+    <button class="btn" data-action="settings">EINSTELLUNGEN</button>
+    <button class="btn danger" data-action="quit">AUFGEBEN</button>
+  </div>
+</div>
+
+<div id="screen-settings" class="screen hidden dim">
+  <div class="panel wide">
+    <h2>EINSTELLUNGEN</h2>
+    <div class="settings-grid">
+      <label>Maus-Empfindlichkeit <output id="o-sens"></output></label>
+      <input type="range" id="s-sens" min="0.1" max="3" step="0.05">
+      <label>Empfindlichkeit beim Zielen (Rechtsklick) <output id="o-adsSens"></output></label>
+      <input type="range" id="s-adsSens" min="0.2" max="1.5" step="0.05">
+      <label>Gesamtlautstärke <output id="o-master"></output></label>
+      <input type="range" id="s-master" min="0" max="1" step="0.05">
+      <label>Musik <output id="o-music"></output></label>
+      <input type="range" id="s-music" min="0" max="1" step="0.05">
+      <label>Effekte <output id="o-sfx"></output></label>
+      <input type="range" id="s-sfx" min="0" max="1" step="0.05">
+      <label>Stimmen <output id="o-voice"></output></label>
+      <input type="range" id="s-voice" min="0" max="1" step="0.05">
+      <label>Fadenkreuz-Form</label>
+      <div class="seg" id="s-chStyle">
+        <button data-v="cross">Kreuz</button><button data-v="dot">Punkt</button><button data-v="circle">Kreis</button><button data-v="crossdot">Kreuz + Punkt</button>
+      </div>
+      <label>Fadenkreuz-Farbe</label>
+      <div class="seg colors" id="s-chColor">
+        <button data-v="#ffffff" style="--c:#ffffff"></button><button data-v="#3dff6e" style="--c:#3dff6e"></button><button data-v="#ffe12e" style="--c:#ffe12e"></button><button data-v="#ff3ddb" style="--c:#ff3ddb"></button><button data-v="#2ee6ff" style="--c:#2ee6ff"></button><button data-v="#ff3b3b" style="--c:#ff3b3b"></button>
+      </div>
+      <label>Sichtfeld</label>
+      <div class="fixed-val">105° (fest)</div>
+    </div>
+    <h3>TASTENBELEGUNG</h3>
+    <div id="keybinds"></div>
+    <div class="row">
+      <button class="btn small" data-action="resetKeys">Tasten zurücksetzen</button>
+      <button class="btn primary" data-action="closeSettings">FERTIG</button>
+    </div>
+  </div>
+</div>
+
+<div id="screen-leaderboard" class="screen hidden dim">
+  <div class="panel">
+    <h2>BESTENLISTE</h2>
+    <ol id="lb-list"><li class="muted">Lade …</li></ol>
+    <div id="lb-me"></div>
+    <button class="btn primary" data-action="closeLeaderboard">ZURÜCK</button>
+  </div>
+</div>
+
+<div id="screen-intermission" class="screen hidden dim">
+  <div class="panel wide intermission">
+    <h2 id="im-title">RUNDE GEWONNEN!</h2>
+    <div id="im-points"></div>
+    <div class="cc-talk">
+      <div class="cc-face">🎭</div>
+      <div id="im-bubbles"></div>
+    </div>
+    <details id="im-file"><summary>📁 Copycats Akte über dich öffnen</summary><div class="dossier" id="im-dossier"></div></details>
+    <button class="btn primary" data-action="nextRound">NÄCHSTE RUNDE <small>[Leertaste]</small></button>
+  </div>
+</div>
+
+<div id="screen-over" class="screen hidden dim">
+  <div class="panel wide over">
+    <h2>GAME OVER</h2>
+    <div class="over-grid">
+      <div>
+        <div class="big-score"><span id="go-score">0</span><small>PUNKTE</small></div>
+        <div class="stats" id="go-stats"></div>
+    <div id="go-submit">
+          <div class="row">
+            <input id="go-name" maxlength="16" placeholder="Dein Spitzname" autocomplete="off">
+            <button class="btn primary" data-action="submitScore">EINTRAGEN</button>
+          </div>
+          <div id="go-pin-row" class="row hidden">
+            <input id="go-pin" maxlength="4" inputmode="numeric" placeholder="PIN (4 Ziffern)">
+            <button class="btn small" data-action="claimName">MIT PIN ANMELDEN</button>
+          </div>
+          <div id="go-msg" class="muted"></div>
+          <div id="go-setpin" class="row hidden">
+            <span class="muted">Optional: PIN setzen, um an anderen PCs mit diesem Namen zu spielen</span>
+            <input id="go-newpin" maxlength="4" inputmode="numeric" placeholder="PIN">
+            <button class="btn small" data-action="setPin">PIN SETZEN</button>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3>COPYCATS AKTE</h3>
+        <div class="dossier" id="go-dossier"></div>
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn primary" data-action="again">NOCHMAL!</button>
+      <button class="btn" data-action="share">TEILEN</button>
+      <button class="btn" data-action="leaderboard">BESTENLISTE</button>
+      <button class="btn" data-action="menu">MENÜ</button>
+    </div>
+  </div>
+</div>
+
+<div id="click-to-play" class="screen hidden dim">
+  <div class="panel"><h2>KLICKEN ZUM WEITERSPIELEN</h2><p class="muted">Das Spiel braucht deine Maus.</p></div>
+</div>
+
+<div id="loading" class="screen"><div class="loader">LADE …</div></div>
+
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
