@@ -24,7 +24,11 @@ export class PlayerModel {
     this.shotsFired = 0; this.shotsHit = 0; this.headshots = 0;
     this.roundsObserved = 0;
     this.barrelTrick = 0; // wie oft Mango ein Fass gegen Copycat benutzt hat
+    this.cap = 0.08;      // wie viel vom Gelernten Copycat schon NUTZEN darf (steigt pro Runde, nie 100 %)
   }
+  // Runde 1: ~8 %, Runde 8: ~45 %, ab Runde 15: 85 % (Maximum)
+  setRound(round) { this.cap = Math.min(0.85, 0.08 + 0.77 * Math.pow(Math.max(0, round - 1) / 14, 1.1)); }
+  get skill() { return Math.min(this.confidence, this.cap); }
 
   // Blickrichtung von Mango zu Copycat -> Mangos rechts/links
   static frame(p, b) {
@@ -132,27 +136,28 @@ export class PlayerModel {
     const vl = perc.vel.x * F.rx + perc.vel.z * F.rz, vf = perc.vel.x * F.fx + perc.vel.z * F.fz;
     const naiveLat = vl * H * 0.25; // "ok" von Anfang an: grobe Vorhaltung
     const learned = this.lateralDrift(perc.latState, perc.latT, H, vl);
-    const c = this.confidence * 0.95;
+    const c = this.skill;
     let lat = naiveLat * (1 - c) + learned * c;
     // Ausweichen, wenn Copycat gerade anfängt zu schießen
     if (perc.burstStart && this.dodge.n >= 4) {
       const pL = this.dodge.L / this.dodge.n, pR = this.dodge.R / this.dodge.n;
-      lat += (pR - pL) * 0.9 * Math.min(1, this.dodge.n / 10);
+      lat += (pR - pL) * 0.9 * Math.min(1, this.dodge.n / 10) * this.cap;
     }
     const fwd = vf * H * 0.6;
     let y = perc.pos.y + (perc.onGround ? 0 : perc.vel.y * H - 10 * H * H);
-    if (perc.onGround && this.dodge.n >= 5 && perc.burstStart) y += 0.35 * (this.dodge.jump / this.dodge.n);
+    if (perc.onGround && this.dodge.n >= 5 && perc.burstStart) y += 0.35 * (this.dodge.jump / this.dodge.n) * this.cap;
     return { x: perc.pos.x + F.rx * lat + F.fx * fwd, y, z: perc.pos.z + F.rz * lat + F.fz * fwd };
   }
   // Wo sucht Copycat, wenn Mango verschwunden ist?
   searchPoint(lastSeen, botPos) {
     const F = PlayerModel.frame(lastSeen, botPos);
-    const w = Math.min(1, this.lostDisp.n / 3);
+    const w = Math.min(1, this.lostDisp.n / 3) * Math.min(1, this.cap * 1.6);
     return { x: lastSeen.x + (F.fx * this.lostDisp.f + F.rx * this.lostDisp.r) * w, z: lastSeen.z + (F.fz * this.lostDisp.f + F.rz * this.lostDisp.r) * w };
   }
   // Von welcher Seite (aus Copycats Sicht) kommt Mango aus der Deckung? + = Copycats rechts
-  peekBias() { const n = this.peek.L + this.peek.R; if (n < 3) return 0; return (this.peek.L - this.peek.R) / n; }
+  peekBias() { const n = this.peek.L + this.peek.R; if (n < 3) return 0; return (this.peek.L - this.peek.R) / n * this.cap; }
   preferredRange() {
+    if (this.cap < 0.25) return 15; // anfangs: lieber auf Abstand bleiben
     const acc = k => { const [s, h] = this.range[k]; return s >= 12 ? h / s : null; };
     const opts = [['close', 7], ['mid', 13], ['far', 21]].map(([k, d]) => [acc(k), d]).filter(a => a[0] !== null);
     if (opts.length < 2) return 13;
@@ -208,7 +213,8 @@ export class PlayerModel {
     else rows.push({ label: 'Ausweichen bei Beschuss', text: 'noch keine Daten' });
     const mr = this.meanRun();
     rows.push({ label: 'Hin-und-her-Rhythmus', text: mr ? `wechselt alle ~${mr.toFixed(2).replace('.', ',')} s die Richtung` : 'noch keine Daten' });
-    rows.push({ label: 'Vorhersage-Sicherheit', bars: [['sicher', this.confidence, '#ff4fa3'], ['', 1 - this.confidence, '#eeeeee']] });
+    rows.push({ label: 'Gelerntes Wissen', bars: [['weiß', this.confidence, '#ff4fa3'], ['', 1 - this.confidence, '#eeeeee']] });
+    rows.push({ label: 'Nutzt davon schon', bars: [['nutzt', this.skill, '#9b5de5'], ['', 1 - this.skill, '#eeeeee']] });
     const acc = k => { const [s, h] = this.range[k]; return s ? `${pct(h / s)} %` : '–'; };
     rows.push({ label: 'Deine Trefferquote', text: `nah ${acc('close')} · mittel ${acc('mid')} · weit ${acc('far')}` });
     const pr = this.preferredRange();

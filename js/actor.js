@@ -56,7 +56,7 @@ export class Actor {
     const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
     // Welt-Richtung: vorwärts = (sin yaw, cos yaw), rechts = (-cos yaw, sin yaw)
     const wx = sy * fwd - cy * side, wz = cy * fwd + sy * side;
-    this.ads = !!cmd.ads && !this.healing;
+    this.ads = !!cmd.ads && !this.healing && this.reloadT < 0;
     this.sprinting = !!cmd.sprint && fwd > 0.3 && !this.ads && !cmd.fire && !this.healing && this.crouch < 0.5;
     this.crouching = !!cmd.crouch;
 
@@ -75,7 +75,8 @@ export class Actor {
       let dx = wx, dz = wz; const l = Math.hypot(dx, dz);
       if (l < 0.1) { dx = sy; dz = cy; } else { dx /= l; dz /= l; }
       this.dashDir = { x: dx, z: dz }; this.dashT = T.dashTime;
-      this.vel.x = dx * T.dashV; this.vel.z = dz * T.dashV; if (!this.onGround) this.vel.y = Math.max(this.vel.y, 1);
+      this.vel.x = dx * T.dashV; this.vel.z = dz * T.dashV; if (!this.onGround) this.vel.y = Math.max(this.vel.y, 0.5);
+      this.slideT = 0;
       ev.push({ type: 'dash', actor: this });
     }
     // Springen
@@ -157,6 +158,10 @@ export class Actor {
       this.vel.x += (tvx * 0.15) * dt; this.vel.z += (tvz * 0.15) * dt;
     } else if (this.dashT > 0) {
       this.dashT -= dt;
+      if (this.dashT <= 0) { // Ruck vorbei: sofort auf Lauftempo abbremsen
+        const v = Math.hypot(this.vel.x, this.vel.z), cap = this.sprinting ? T.sprint : T.walk;
+        if (v > cap) { this.vel.x *= cap / v; this.vel.z *= cap / v; }
+      }
     } else {
       const accel = this.onGround ? T.accelGround : T.accelAir;
       let dx = tvx - this.vel.x, dz = tvz - this.vel.z;
@@ -170,7 +175,7 @@ export class Actor {
     this.pos.x += this.vel.x * dt; this.pos.z += this.vel.z * dt;
     const r = this.rig.spec.bodyR * 0.9;
     const bumped = world.pushOut(this.pos, r, this.pos.y, this.height, T.stepHeight);
-    if (bumped && this.dashT > 0) this.dashT = 0;
+    if (bumped && this.dashT > 0) { this.dashT = 0; const v = Math.hypot(this.vel.x, this.vel.z); if (v > T.walk) { this.vel.x *= T.walk / v; this.vel.z *= T.walk / v; } }
     // tatsächliche Geschwindigkeit nach Kollision
     if (dt > 0) {
       const ax = (this.pos.x - prevX) / dt, az = (this.pos.z - prevZ) / dt;
@@ -208,7 +213,7 @@ export class Actor {
       grounded: this.onGround, crouch: this.slideT > 0 ? 0 : this.crouch, slide: this.slideT > 0,
       pitch: this.pitch, reload: this.reloadT >= 0 ? this.reloadT / T.reloadTime : -1,
       syringe: this.syringeT >= 0 ? this.syringeT / T.syringeAnim : -1,
-      taunt: this.taunt, dead: this.alive ? 0 : Math.min(1, this.deadT * 2.2),
+      taunt: this.taunt, dead: this.alive ? 0 : Math.min(1, this.deadT * 2.2), sprint: this.sprinting, dash: this.dashT > 0,
     };
   }
   syncRig(dt, st = this.animState()) {

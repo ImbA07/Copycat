@@ -1,105 +1,30 @@
 {
-  "mango": {
-    "round_start": {
-      "conf": ["Na dann, Pantomime. Zeig mal, was du kannst.", "Ich bin ein Künstler. Und das hier wird mein Meisterwerk.", "Runde um Runde, Kopf um Kopf."],
-      "neutral": ["Okay. Konzentration, Mango.", "Auf ein Neues.", "Also gut. Showtime."],
-      "desp": ["Das wird schon. Bestimmt. Hoffentlich.", "Tief durchatmen. Er ist nur ein Pantomime. Ein sehr gemeiner Pantomime."]
-    },
-    "headshot": {
-      "conf": ["Volltreffer! Genau zwischen die Augen.", "Kopfschuss! Applaus, bitte."],
-      "neutral": ["Treffer! Mitten auf die Mütze."],
-      "desp": ["Ha! Siehst du? Ich kann's noch!"]
-    },
-    "round_win": {
-      "conf": ["Vorhang zu. Verbeugung.", "Und wieder einmal: ungeschlagen.", "Das war Kunst."],
-      "neutral": ["Geschafft. Weiter geht's.", "Der Pantomime liegt. Gut so."],
-      "desp": ["Ja! Ich hab's noch drauf! Glaub ich.", "Puh. Das war knapp. Aber gewonnen ist gewonnen!"]
-    },
-    "hurt": {
-      "conf": ["Pah, ein Kratzer.", "Das kitzelt nur."],
-      "neutral": ["Au!", "Hey!"],
-      "desp": ["Aua! Warum immer ich?", "Das gibt blaue Flecken."]
-    },
-    "low_hp": {
-      "conf": ["Jetzt wird's erst richtig spannend."],
-      "neutral": ["Ich brauche eine Spritze."],
-      "desp": ["Nur noch ein bisschen Leben. Das reicht. Das muss reichen."]
-    },
-    "heal": {
-      "conf": ["Ein kleiner Pieks für die Gesundheit."],
-      "neutral": ["Spritze rein, Mango bleibt."],
-      "desp": ["Bitte wirk. Bitte wirk. Bitte wirk."]
-    },
-    "taunted": {
-      "conf": ["Tanz ruhig. Das wird dein letzter Tanz."],
-      "neutral": ["Was soll das denn werden?"],
-      "desp": ["Hör auf zu tanzen! Das ist gemein!"]
-    },
-    "flag_spawn": {
-      "conf": ["Die Flagge! Die gehört mir!"],
-      "neutral": ["Da ist die Flagge."],
-      "desp": ["Die Flagge! Vielleicht rettet die mich."]
-    },
-    "flag_win": {
-      "conf": ["Flagge erobert. Stilvoll wie immer."],
-      "neutral": ["Flagge ist meine!"],
-      "desp": ["Flagge! Ich hab die Flagge! Ha!"]
-    },
-    "death": {
-      "conf": ["Unmöglich! Ich war doch so gut!"],
-      "neutral": ["Nein! Nicht jetzt!"],
-      "desp": ["Das war nicht der Plan."]
-    },
-    "tutorial": {
-      "neutral": ["Übung macht den Meister. Und ich bin schon fast einer."]
-    }
-  },
   "copycat": {
-    "round_start": {
-      "whisper": ["Psst. Ich beobachte dich.", "Ich kenne dich schon ein bisschen.", "Heute spiele ich dich.", "Ich lerne. Jede Sekunde."]
-    },
-    "hit_player": {
-      "whisper": ["Hihihi.", "Getroffen.", "Ups."]
-    },
-    "win": {
-      "whisper": ["Vorhersehbar.", "Genau da hab ich dich erwartet.", "Das war zu einfach.", "Ich weiß alles über dich."]
-    },
-    "taunt": {
-      "whisper": ["Schau mal. Das bist du.", "Ich bin du. Nur besser."]
-    },
-    "hurt": {
-      "whisper": ["Autsch.", "Das war Glück."]
-    },
-    "flag_warn": {
-      "whisper": ["Gleich kommt die Flagge. Ich freu mich schon."]
-    },
-    "flag_spawn": {
-      "whisper": ["Die Flagge gehört mir."]
-    },
-    "break": {
-      "angry": ["JETZT REICHT'S ABER!"],
-      "amused": ["HA HA HA HA!"]
-    },
-    "break_after": {
-      "whisper": ["Das hast du nicht gehört.", "Pardon. Ich bin Pantomime."]
-    },
-    "learn_dodge_left": {"whisper": ["Du weichst immer nach links aus. Langweilig."]},
-    "learn_dodge_right": {"whisper": ["Du weichst immer nach rechts aus. Wie süß."]},
-    "learn_jump": {"whisper": ["Du springst ständig. Wie ein Flummi."]},
-    "learn_adad": {"whisper": ["Links, rechts, links, rechts. Ich kenne deinen Rhythmus."]},
-    "learn_heal_early": {"whisper": ["Du heilst dich viel zu früh. Angsthase."]},
-    "learn_heal_late": {"whisper": ["Du heilst dich immer erst ganz am Ende."]},
-    "learn_camper": {"whisper": ["Du versteckst dich gern. Ich finde dich trotzdem."]},
-    "learn_rusher": {"whisper": ["Du stürmst immer blind nach vorne."]},
-    "learn_close_weak": {"whisper": ["Aus der Nähe triffst du gar nichts."]},
-    "learn_far_weak": {"whisper": ["Auf Distanz triffst du gar nichts."]},
-    "learn_peek_left": {"whisper": ["Du kommst immer links aus der Deckung."]},
-    "learn_peek_right": {"whisper": ["Du kommst immer rechts aus der Deckung."]},
-    "learn_flag": {"whisper": ["Du rennst immer sofort zur Flagge."]},
-    "learn_slide": {"whisper": ["Du rutschst so gerne. Ich jetzt auch."]},
-    "learn_dash": {"whisper": ["Dash, dash, dash. Ich kann das auch."]},
-    "learn_high": {"whisper": ["Du stehst so gerne oben. Ich weiß."]},
-    "learn_nothing": {"whisper": ["Hm. Noch weiß ich nicht viel. Noch."]},
-    "tutorial": {"whisper": ["Übe ruhig. Ich schaue zu."]}
+    "round_start": {"voice": ["Na, bereit für die nächste Runde?", "Ich hab dich beobachtet. Die ganze Zeit!", "Diesmal kriege ich dich!", "Los geht's, Clown!", "Mal sehen, was du heute falsch machst!"]},
+    "hit_player": {"voice": ["Treffer!", "Erwischt!", "Hab dich!", "Das tat weh, oder?"]},
+    "win": {"voice": ["Vorhersehbar!", "Genau da hab ich dich erwartet!", "Das war zu einfach!", "Ich kenne dich besser als du dich selbst!"]},
+    "lose": {"voice": ["Glück gehabt!", "Nächstes Mal kriege ich dich!", "Ich lerne noch!"]},
+    "taunt": {"voice": ["Schau mal, das bist du!", "Na, gefällt dir mein Tanz?", "Ich mach dich nach!"]},
+    "hurt": {"voice": ["Aua!", "Hey! Das war Glück!", "Ach komm schon!"]},
+    "flag_warn": {"voice": ["Gleich kommt die Flagge! Die gehört mir!"]},
+    "flag_spawn": {"voice": ["Die Flagge gehört mir!"]},
+    "learn_dodge_left": {"voice": ["Du weichst immer nach links aus! Langweilig!"]},
+    "learn_dodge_right": {"voice": ["Du weichst immer nach rechts aus! Wie süß!"]},
+    "learn_jump": {"voice": ["Du springst ständig rum! Wie ein Flummi!"]},
+    "learn_adad": {"voice": ["Links, rechts, links, rechts! Ich kenne deinen Rhythmus!"]},
+    "learn_heal_early": {"voice": ["Du heilst dich viel zu früh! Angsthase!"]},
+    "learn_heal_late": {"voice": ["Du heilst dich immer erst ganz am Ende!"]},
+    "learn_camper": {"voice": ["Du versteckst dich gern! Ich finde dich trotzdem!"]},
+    "learn_rusher": {"voice": ["Du stürmst immer blind nach vorne!"]},
+    "learn_close_weak": {"voice": ["Aus der Nähe triffst du gar nichts!"]},
+    "learn_far_weak": {"voice": ["Auf Distanz triffst du gar nichts!"]},
+    "learn_peek_left": {"voice": ["Du kommst immer links aus der Deckung!"]},
+    "learn_peek_right": {"voice": ["Du kommst immer rechts aus der Deckung!"]},
+    "learn_flag": {"voice": ["Du rennst immer sofort zur Flagge!"]},
+    "learn_slide": {"voice": ["Du rutschst so gerne! Ich jetzt auch!"]},
+    "learn_dash": {"voice": ["Dash, Dash, Dash! Das kann ich auch!"]},
+    "learn_high": {"voice": ["Du stehst so gerne oben! Ich weiß das!"]},
+    "learn_nothing": {"voice": ["Noch weiß ich nicht viel über dich. Noch!"]},
+    "tutorial": {"voice": ["Übe ruhig! Ich schaue zu!"]}
   }
 }

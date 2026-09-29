@@ -110,15 +110,15 @@ details summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
 #crosshair i { position: absolute; background: var(--ch); box-shadow: 0 0 0 1.5px var(--ink); border-radius: 1px; }
 #crosshair .ring { border: 2px solid var(--ch); background: transparent; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--ink), inset 0 0 0 1.5px var(--ink); }
 #hitmarker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; opacity: 0; }
-#hitmarker i { position: absolute; width: 3px; height: 11px; background: #fff; box-shadow: 0 0 0 1.5px var(--ink); left: -1.5px; top: -5.5px; }
-#hitmarker.head i { background: var(--red); height: 15px; top: -7.5px; width: 4px; }
-#hitmarker.kill i { background: var(--yellow); height: 18px; top: -9px; width: 4px; }
+#hitmarker i { position: absolute; width: 2px; height: 8px; background: #fff; box-shadow: 0 0 0 1px var(--ink); left: -1px; top: -4px; }
+#hitmarker.head i { background: var(--red); height: 10px; top: -5px; width: 3px; }
+#hitmarker.kill i { background: var(--yellow); height: 12px; top: -6px; width: 3px; }
 #vignette { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .15s; background: radial-gradient(ellipse at center, transparent 45%, rgba(255, 30, 60, .6) 100%); }
 #float-layer { position: absolute; inset: 0; overflow: hidden; }
-.dmg { position: absolute; font-family: 'Bangers'; font-size: 1.6rem; color: #fff; -webkit-text-stroke: 1.5px var(--ink); letter-spacing: 1px; transform: translate(-50%, -50%); white-space: nowrap; animation: dmgfly .8s ease-out forwards; }
-.dmg.head { color: var(--yellow); font-size: 2.3rem; }
+.dmg { position: absolute; font-family: 'Bangers'; font-size: 1.25rem; color: #fff; -webkit-text-stroke: 1.5px var(--ink); letter-spacing: 1px; transform: translate(-50%, -50%); white-space: nowrap; animation: dmgfly .8s ease-out forwards; }
+.dmg.head { color: var(--yellow); font-size: 1.7rem; }
 @keyframes dmgfly { 0% { transform: translate(-50%, -50%) scale(.4); } 15% { transform: translate(-50%, -70%) scale(1.25); } 100% { transform: translate(-50%, -170%) scale(1); opacity: 0; } }
-.pow { position: absolute; font-family: 'Bangers'; font-size: 2.6rem; color: var(--yellow); -webkit-text-stroke: 2px var(--ink); padding: 18px 26px; transform: translate(-50%, -50%);
+.pow { position: absolute; font-family: 'Bangers'; font-size: 1.9rem; color: var(--yellow); -webkit-text-stroke: 2px var(--ink); padding: 18px 26px; transform: translate(-50%, -50%);
   background: radial-gradient(circle, var(--pink) 0 45%, transparent 46%); clip-path: polygon(50% 0, 61% 30%, 98% 20%, 72% 50%, 100% 80%, 62% 70%, 50% 100%, 38% 70%, 0 80%, 28% 50%, 2% 20%, 39% 30%); animation: powfx .6s ease-out forwards; }
 @keyframes powfx { 0% { transform: translate(-50%, -50%) scale(.2) rotate(-20deg); } 25% { transform: translate(-50%, -50%) scale(1.15) rotate(6deg); } 100% { transform: translate(-50%, -60%) scale(1) rotate(0); opacity: 0; } }
 .speech { position: absolute; transform: translate(-50%, -100%); background: #fff; border: 3px solid var(--ink); border-radius: 14px; padding: 5px 12px; font-weight: 700; font-size: 1rem; max-width: 260px; text-align: center; font-style: italic; }

@@ -5,6 +5,7 @@ import { Input } from './input.js';
 import { ComicRenderer, LAYER_FX } from './toon.js';
 import { buildArena, THEMES, THEME_NAMES } from './arena.js';
 import { buildMango, buildCopycat, buildViewmodel } from './characters.js';
+import { loadAssets } from './assets.js';
 import { Actor, RECOIL } from './actor.js';
 import { CopycatBrain } from './bot.js';
 import { Effects } from './effects.js';
@@ -34,6 +35,7 @@ class Game {
     this.dialog = new Dialog(this.ui.el.subs, this.ui.el.float);
 
     this.mango = buildMango(); this.copycat = buildCopycat();
+    for (const rig of [this.mango, this.copycat]) rig.onMagDrop = obj => this.effects.dropMag(obj);
     this.scene.add(this.mango.root, this.copycat.root);
     this.player = new Actor(this.mango, 'mango');
     this.bot = new Actor(this.copycat, 'copycat');
@@ -84,11 +86,11 @@ class Game {
     this.camera.position.set(-0.4, 1.75, 2.2);
     this.camera.lookAt(-0.2, 1.95, -3); this.setFov(80);
     this.player.syncRig(dt, { speed: 0, fwd: 0, side: 0, grounded: true, crouch: 0, slide: false, pitch: 0.05 + Math.sin(t) * 0.03, reload: -1, syringe: -1, taunt: null, dead: 0 });
-    this.mango.head.rotation.y = Math.sin(t * 0.7) * 0.25;
+    this.mango.bones.Neck.rotateY(Math.sin(t * 0.7) * 0.25);
     // Copycat äfft die Maus nach
     this.bot.syncRig(dt, { speed: 0, fwd: 0, side: 0, grounded: true, crouch: 0, slide: false, pitch: -this.mouseNY * 0.5, reload: -1, syringe: -1, taunt: null, dead: 0 });
     const cc = this.copycat;
-    cc.head.rotation.y = -this.mouseNX * 0.7; cc.head.rotation.x = this.mouseNY * 0.4;
+    cc.bones.Neck.rotateY(-this.mouseNX * 0.7); cc.bones.Neck.rotateX(this.mouseNY * 0.4);
     cc.body.rotation.z = -this.mouseNX * 0.12;
     cc.root.rotation.y = -0.45 - this.mouseNX * 0.35;
   }
@@ -124,19 +126,18 @@ class Game {
     P.pos = { x: sp.player.x, y: 0, z: sp.player.z }; P.yaw = sp.player.yaw; P.pitch = 0;
     B.pos = { x: sp.bot.x, y: 0, z: sp.bot.z }; B.yaw = sp.bot.yaw; B.pitch = 0;
     this.mango.root.visible = true; this.copycat.root.visible = true;
-    this.brain.resetRound();
+    this.brain.resetRound(); this.brain.model.setRound(this.round);
     this.flag = { active: false, progress: { player: 0, bot: 0 }, owner: null, spawnT: 0, rise: 0, warned: false };
     this.arena.flag.group.visible = false;
     this.roundTime = 0; this.countdown = 3; this.state = 'countdown';
-    this.recoilAcc = { p: 0, y: 0 }; this.timeScale = 1; this.lowHpSaid = false; this.brokeSilence = false;
+    this.recoilAcc = { p: 0, y: 0 }; this.timeScale = 1; this.sprintOn = false;
     this.killcam = { buf: [], tracers: [], playing: false }; this.kcAcc = 0;
     this.ui.hideScreens(); this.ui.hud(true); this.ui.hideTutorial();
     this.ui.center(`RUNDE ${this.round}`, THEME_NAMES[theme], 1.6);
     audio.setMode('game'); audio.tension = 0.15;
     this.lockGame();
     this.lastBeep = 4;
-    setTimeout(() => { if (this.state === 'countdown' || this.state === 'playing') this.dialog.say('mango', 'round_start', { mood: this.mood(), force: true }); }, 400);
-    setTimeout(() => { if (this.state === 'countdown' || this.state === 'playing') this.dialog.say('copycat', 'round_start', { chance: this.round === 1 ? 1 : 0.6 }); }, 2600);
+    setTimeout(() => { if (this.state === 'countdown' || this.state === 'playing') this.dialog.say('round_start', { chance: this.round === 1 ? 1 : 0.6 }); }, 1800);
   }
   lockGame() {
     this.wantLock = true; this.input.enabled = true;
@@ -178,10 +179,14 @@ class Game {
       P.pitch -= rp; this.recoilAcc.p -= rp; P.yaw -= ry; this.recoilAcc.y -= ry;
     }
     if (frozen) return { ads };
+    // Sprint = Schalter: an/aus per Taste, aus bei Stehenbleiben, Schießen, Zielen, Ducken, Spritze
+    if (inp.pressed('sprint')) { this.sprintOn = !this.sprintOn; this.noFwdT = 0; }
+    this.noFwdT = inp.down('forward') ? 0 : (this.noFwdT || 0) + dt;
+    if (this.noFwdT > 0.6 || inp.mouse.left || ads || P.healing) this.sprintOn = false;
     return {
       fwd: (inp.down('forward') ? 1 : 0) - (inp.down('back') ? 1 : 0),
       side: (inp.down('right') ? 1 : 0) - (inp.down('left') ? 1 : 0),
-      sprint: inp.down('sprint'), jump: inp.pressed('jump'),
+      sprint: this.sprintOn, jump: inp.pressed('jump'),
       crouch: inp.down('crouch'), crouchPressed: inp.pressed('crouch'), dash: inp.pressed('dash'),
       fire: inp.mouse.left, firePressed: inp.mouse.leftPressed, reload: inp.pressed('reload'), heal: inp.pressed('heal'), ads,
     };
@@ -192,7 +197,7 @@ class Game {
     const A = ev.actor, isP = A === this.player, other = isP ? this.bot : this.player;
     const world = this.arena.world;
     let origin, dir;
-    const spread = ev.spread * DEG * (isP ? 1 : 1.5 + ev.index * 0.06);
+    const spread = ev.spread * DEG * (isP ? 1 : 1.7 + ev.index * 0.06);
     const jitter = (fwd) => {
       if (spread <= 0) return fwd;
       const up = Math.abs(fwd.y) > 0.99 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
@@ -273,10 +278,9 @@ class Game {
       this.ui.hitmarker(kill ? 'kill' : head ? 'head' : 'body');
       audio.play(head ? 'headshot' : 'hit', null, 0.9);
       this.effects.damageNumber(point, done, head);
-      if (head) { this.effects.pow(point, POW_WORDS[(Math.random() * POW_WORDS.length) | 0]); this.dialog.say('mango', 'headshot', { mood: this.mood(), chance: 0.5, cooldown: 7 }); }
+      if (head) { this.effects.pow(point, POW_WORDS[(Math.random() * POW_WORDS.length) | 0]); }
       if (!kill) {
-        if (head && !this.brokeSilence && Math.random() < 0.18) { this.brokeSilence = true; this.dialog.breakSilence(); }
-        else this.dialog.say('copycat', 'hurt', { chance: 0.25, cooldown: 8 });
+        this.dialog.say('hurt', { chance: 0.25, cooldown: 9 });
       }
       this.brain && (this.brain.lastSeen = { ...from.pos }, this.brain.lastSeenTime = this.roundTime);
     } else {
@@ -284,9 +288,7 @@ class Game {
       this.ui.hurt(done); audio.play('hurt', null, 0.8);
       this.effects.shake = Math.max(this.effects.shake, 0.25);
       if (target.alive) {
-        if (target.hp < 30 && !this.lowHpSaid) { this.lowHpSaid = true; this.dialog.say('mango', 'low_hp', { mood: this.mood() }); }
-        else if (done >= 30 || Math.random() < 0.2) this.dialog.say('mango', 'hurt', { mood: this.mood(), cooldown: 7 });
-        this.dialog.say('copycat', 'hit_player', { chance: 0.15, cooldown: 10 });
+        this.dialog.say('hit_player', { chance: 0.2, cooldown: 10 });
       }
     }
     this.handleEvents(ev);
@@ -337,7 +339,7 @@ class Game {
         case 'fire': this.shoot(ev); break;
         case 'empty': if (isP) audio.play('empty'); break;
         case 'reload': audio.play('reload', isP ? null : pos, 0.8); if (isP) { this.brain?.model.onReload(ev.ammoLeft); this.brain?.hear(A.pos, 16); this.tutFlags.reload = true; } break;
-        case 'heal': audio.play('syringe', isP ? null : pos); if (isP) { this.brain?.model.onHeal(ev.hp); this.brain?.hear(A.pos, 16); this.dialog.say('mango', 'heal', { mood: this.mood(), chance: 0.7, cooldown: 4 }); this.tutFlags.heal = true; } break;
+        case 'heal': audio.play('syringe', isP ? null : pos); if (isP) { this.brain?.model.onHeal(ev.hp); this.brain?.hear(A.pos, 16); this.tutFlags.heal = true; } break;
         case 'stab': audio.play('click', isP ? null : pos, 0.6); break;
         case 'healtick': if (isP) audio.play('heal', null, 0.5); break;
         case 'jump': audio.play('jump', isP ? null : pos, 0.6); if (isP) { this.brain?.model.onTrick('jump'); this.tutFlags.jump = true; } break;
@@ -362,8 +364,7 @@ class Game {
       this.finishRound('kill', !!info?.head);
     } else {
       audio.play('lose');
-      this.dialog.say('mango', 'death', { mood: 'desp', force: true });
-      setTimeout(() => this.dialog.say('copycat', 'win', { force: true }), 1400);
+      setTimeout(() => this.dialog.say('win', { force: true }), 700);
       if (this.bot.alive) this.bot.taunt = { type: 'dance', t: 0, dur: 99 };
       this.lossReason = 'kill';
     }
@@ -372,8 +373,7 @@ class Game {
   onBotTaunt(type) {
     const b = this.bot.pos;
     audio.play('kazoo', { x: b.x, y: b.y + 2, z: b.z }, 1.2);
-    this.dialog.say('copycat', 'taunt', { chance: 0.7, cooldown: 8 });
-    setTimeout(() => { if (this.state === 'playing') this.dialog.say('mango', 'taunted', { mood: this.mood(), chance: 0.8, cooldown: 10 }); }, 1500);
+    this.dialog.say('taunt', { chance: 0.7, cooldown: 8 });
   }
 
   finishRound(how, head) {
@@ -393,7 +393,7 @@ class Game {
     this.brain.model.onRoundEnd(this.flag.active);
     audio.play('win');
     this.ui.center(how === 'flag' ? 'FLAGGE!' : 'GEWONNEN!', `+${sum.toLocaleString('de-DE')}`, 2);
-    setTimeout(() => this.dialog.say('mango', how === 'flag' ? 'flag_win' : 'round_win', { mood: this.mood(), force: true }), 350);
+    setTimeout(() => this.dialog.say('lose', { chance: 0.6, force: true }), 500);
   }
 
   showIntermission() {
@@ -401,11 +401,11 @@ class Game {
     this.state = 'intermission'; this.wantLock = false; this.input.unlock();
     const ins = this.brain.model.insights();
     const lines = [];
-    const txt = key => VOICE.copycat[key]?.whisper?.[0]?.text;
+    const txt = key => VOICE.copycat[key]?.[0]?.text;
     if (ins.length) {
       for (const i of ins.slice(0, 3)) lines.push(txt(i.key));
-      this.dialog.say('copycat', ins[0].key, { force: true });
-    } else { lines.push(txt('learn_nothing')); this.dialog.say('copycat', 'learn_nothing', { force: true }); }
+      this.dialog.say(ins[0].key, { force: true });
+    } else { lines.push(txt('learn_nothing')); this.dialog.say('learn_nothing', { force: true }); }
     const pts = d.pts.map(([l, v]) => [l, v.toLocaleString('de-DE')]);
     if (d.bonusSyr) pts.push(['💉 3× ohne Schaden: Extra-Spritze!', '']);
     this.ui.intermission({ title: d.how === 'flag' ? `RUNDE ${this.round}: FLAGGE EROBERT!` : `RUNDE ${this.round} GEWONNEN!`, points: pts, total: this.score, lines, dossier: this.brain.model.dossier() });
@@ -502,7 +502,6 @@ class Game {
     this.ui.center('MINI-TUTORIAL', 'In 1 Minute bereit für Copycat', 2);
     audio.setMode('calm');
     this.lockGame();
-    setTimeout(() => this.dialog.say('mango', 'tutorial', { force: true }), 800);
   }
   updateTutorial(dt) {
     const P = this.player;
@@ -515,7 +514,7 @@ class Game {
     for (const t of this.targets) if (!t.alive && t.down < 1) { t.down = Math.min(1, t.down + dt * 3); t.rig.root.rotation.x = -t.down * 1.5; }
     if (this.tutStep >= this.tutSteps.length) {
       this.tutDoneT += dt;
-      if (this.tutDoneT === dt) { this.ui.center('BEREIT!', this.tutThenPlay ? 'Jetzt gegen Copycat …' : 'Du kannst es.', 2.5); audio.play('win'); this.dialog.say('copycat', 'tutorial', { force: true }); profile.tutorialDone = true; saveProfile(); }
+      if (this.tutDoneT === dt) { this.ui.center('BEREIT!', this.tutThenPlay ? 'Jetzt gegen Copycat …' : 'Du kannst es.', 2.5); audio.play('win'); this.dialog.say('tutorial', { force: true }); profile.tutorialDone = true; saveProfile(); }
       if (this.tutDoneT > 3) this.endTutorial();
     }
   }
@@ -588,13 +587,13 @@ class Game {
     const f = this.flag, t = this.roundTime;
     if (!f.warned && t >= T.flagWarn) {
       f.warned = true; audio.play('siren'); this.ui.center('FLAGGE IN 10 S!', 'Mitte der Arena', 2);
-      this.dialog.say('copycat', 'flag_warn', { force: true });
+      this.dialog.say('flag_warn', { force: true });
     }
     if (!f.active && t >= T.flagTime) {
       f.active = true; f.spawnT = t; f.rise = 0; this.arena.flag.group.visible = true;
       this.ui.center('🚩 FLAGGE!', '5 Sekunden allein in der Zone = Sieg', 2.2);
       audio.play('capture');
-      this.dialog.say('mango', 'flag_spawn', { mood: this.mood(), force: true });
+      this.dialog.say('flag_spawn', { chance: 0.7 });
     }
     if (!f.active) return;
     f.rise = Math.min(1, f.rise + dt);
@@ -610,7 +609,7 @@ class Game {
     else if (f.progress.bot >= T.flagCapture) {
       this.state = 'roundEnd'; this.roundEndT = 0; this.timeScale = 0.5; this.lossReason = 'flag';
       audio.play('lose'); this.ui.center('COPYCAT HAT DIE FLAGGE!', '', 2.5);
-      this.dialog.say('copycat', 'win', { force: true }); this.bot.taunt = { type: 'dance', t: 0, dur: 99 };
+      this.dialog.say('win', { force: true }); this.bot.taunt = { type: 'dance', t: 0, dur: 99 };
     }
   }
 
@@ -780,4 +779,7 @@ class Game {
   }
 }
 
-window.game = new Game();
+const loadEl = document.querySelector('#loading .loader');
+loadAssets(f => { loadEl.textContent = `LADE … ${Math.round(f * 100)} %`; })
+  .then(() => { window.game = new Game(); })
+  .catch(e => { loadEl.textContent = 'Fehler beim Laden 😢'; console.error(e); });

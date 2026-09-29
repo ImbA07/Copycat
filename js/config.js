@@ -14,7 +14,7 @@ export const T = {
   accelGround: 70, accelAir: 14, friction: 12,
   gravity: 21, jumpV: 7.6,
   slideV: 11.5, slideTime: 0.85, slideCooldown: 0.5,
-  dashV: 17, dashTime: 0.16, dashCharges: 2, dashRecharge: 5,
+  dashV: 24, dashTime: 0.12, dashCharges: 2, dashRecharge: 5,
   stepHeight: 0.5,
   // Sturmgewehr
   magSize: 20, fireInterval: 0.1, reloadTime: 1.9,
@@ -40,7 +40,7 @@ export const DEFAULT_KEYS = {
 };
 
 const DEFAULT_SETTINGS = {
-  sens: 1.0, adsSens: 0.75, master: 0.8, music: 0.55, sfx: 0.85, voice: 1.0,
+  sens: 1.0, adsSens: 0.75, master: 0.8, music: 0.55, sfx: 0.85, voice: 0.6,
   chStyle: 'crossdot', chColor: '#ffffff', keys: { ...DEFAULT_KEYS },
 };
 
@@ -53,6 +53,7 @@ export function store(key, value) {
 
 export const settings = { ...DEFAULT_SETTINGS, ...load('copycat.settings', {}) };
 settings.keys = { ...DEFAULT_KEYS, ...(settings.keys || {}) };
+if (!settings.v2) { settings.voice = Math.min(settings.voice, 0.6); settings.v2 = true; }
 export function saveSettings() { store('copycat.settings', settings); }
 export function resetKeys() { settings.keys = { ...DEFAULT_KEYS }; saveSettings(); }
 

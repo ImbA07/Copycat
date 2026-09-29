@@ -24,7 +24,7 @@ class AudioSys {
     this.master.gain.value = settings.master;
     this.sfxBus.gain.value = settings.sfx;
     this.musicBus.gain.value = settings.music * 0.55;
-    this.voiceBus.gain.value = settings.voice * 1.2;
+    this.voiceBus.gain.value = settings.voice * 0.7;
   }
   get now() { return this.ctx.currentTime; }
 
@@ -126,17 +126,16 @@ class AudioSys {
     this.buffers.set(url, p); return p;
   }
   preload(urls) { if (this.ctx) urls.forEach(u => this.load(u)); }
-  async voice(url, { rate = 1, whisper = false } = {}) {
-    if (!this.ctx) return 0;
+  async voice(url) {
+    if (!this.ctx) return null;
     const buf = await this.load(url);
-    if (!buf) return 0;
-    const s = this.ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
-    const g = this.ctx.createGain(); g.gain.value = whisper ? 1.5 : 1;
-    s.connect(g).connect(this.voiceBus); s.start();
-    // Musik kurz leiser
-    const t = this.now, dur = buf.duration / rate;
-    this.duck.gain.cancelScheduledValues(t); this.duck.gain.setTargetAtTime(0.45, t, 0.05); this.duck.gain.setTargetAtTime(1, t + dur, 0.3);
-    return dur;
+    if (!buf) return null;
+    const src = this.ctx.createBufferSource(); src.buffer = buf;
+    src.connect(this.voiceBus); src.start();
+    // Musik währenddessen etwas leiser
+    const t = this.now, dur = buf.duration;
+    this.duck.gain.cancelScheduledValues(t); this.duck.gain.setTargetAtTime(0.55, t, 0.05); this.duck.gain.setTargetAtTime(1, t + dur, 0.3);
+    return { src, dur };
   }
 
   // ---------------- Musik ----------------

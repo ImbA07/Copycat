@@ -1,288 +1,340 @@
-// Figuren: Mango (Spieler) und Copycat (Pantomime). Aus einfachen Formen gebaut, prozedural animiert.
+// Figuren: Profi-Modelle (Quaternius, CC0) + eigene Animationsschicht.
+// Fertige Animationen (Stehen, Gehen, Jubeln, Umfallen) werden abgespielt; Zielen, Nachladen, Spritze, Ducken,
+// Rutschen und Springen werden am Skelett berechnet (Hände/Füße greifen per "IK" genau an die richtige Stelle).
 import * as THREE from 'three';
-import { toon, flat, box, sphere, cyl, cone, capsule, LAYER_FX } from './toon.js';
+import { toon, box, sphere, cyl, cone, LAYER_FX } from './toon.js';
+import { charGltf, cloneSkinned, prop } from './assets.js';
 
-const stripes = (() => {
-  const c = document.createElement('canvas'); c.width = 16; c.height = 64;
-  const g = c.getContext('2d');
-  for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#1c1a24' : '#ffffff'; g.fillRect(0, i * 8, 16, 8); }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.magFilter = THREE.NearestFilter;
-  return t;
-})();
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z), Q = () => new THREE.Quaternion();
+const _a = V(), _b = V(), _c = V(), _q1 = Q(), _q2 = Q(), _q3 = Q();
+const smooth = t => t * t * (3 - 2 * t);
+const seg = (t, a, b) => Math.min(1, Math.max(0, (t - a) / (b - a)));
 
-export function buildRifle(accent = '#ff8a1f') {
-  const g = new THREE.Group();
-  const dark = '#34313d';
-  g.add(box(0.1, 0.14, 0.55, dark, 0, 0, 0));            // Gehäuse
-  g.add(box(0.08, 0.08, 0.3, accent, 0, -0.01, 0.38));  // Handschutz
-  const barrel = cyl(0.025, 0.025, 0.35, '#222', 0, 0.01, 0.65, 8); barrel.rotation.x = Math.PI / 2; g.add(barrel);
-  g.add(box(0.07, 0.22, 0.1, '#222', 0, -0.16, 0.12));   // Magazin
-  g.add(box(0.07, 0.14, 0.08, dark, 0, -0.12, -0.12));   // Griff
-  g.add(box(0.08, 0.12, 0.3, accent, 0, -0.03, -0.4));   // Schaft
-  g.add(box(0.02, 0.06, 0.03, '#222', 0, 0.1, 0.62));    // Korn
-  g.add(box(0.07, 0.05, 0.03, '#222', 0, 0.09, -0.2));   // Kimme
-  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.01, 0.84); g.add(muzzle);
-  const mag = g.children[3];
-  return { group: g, muzzle, mag };
+// ---------- IK-Helfer ----------
+function aimBone(bone, childWorld, targetWorld) {
+  bone.getWorldPosition(_a);
+  _b.copy(childWorld).sub(_a);
+  _c.copy(targetWorld).sub(_a);
+  if (_b.lengthSq() < 1e-10 || _c.lengthSq() < 1e-10) return;
+  _b.normalize(); _c.normalize();
+  _q1.setFromUnitVectors(_b, _c);
+  bone.getWorldQuaternion(_q2);
+  _q1.multiply(_q2);
+  bone.parent.getWorldQuaternion(_q3).invert();
+  bone.quaternion.copy(_q3.multiply(_q1));
+  bone.updateMatrixWorld(true);
+}
+const _A = V(), _B = V(), _C = V(), _T = V(), _P = V(), _E = V(), _dir = V();
+function twoBoneIK(upper, lower, end, target, pole) {
+  upper.getWorldPosition(_A); lower.getWorldPosition(_B); end.getWorldPosition(_C);
+  const la = _A.distanceTo(_B), lb = _B.distanceTo(_C);
+  _dir.copy(target).sub(_A);
+  const d = Math.min(Math.max(_dir.length(), 0.01), (la + lb) * 0.999);
+  _dir.normalize();
+  _P.copy(pole).sub(_A); _P.addScaledVector(_dir, -_P.dot(_dir));
+  if (_P.lengthSq() < 1e-8) _P.set(0, -1, 0);
+  _P.normalize();
+  const cosA = Math.min(1, Math.max(-1, (la * la + d * d - lb * lb) / (2 * la * d)));
+  _E.copy(_A).addScaledVector(_dir, la * cosA).addScaledVector(_P, la * Math.sqrt(1 - cosA * cosA));
+  aimBone(upper, _B, _E);
+  lower.getWorldPosition(_B); end.getWorldPosition(_C);
+  _T.copy(_A).addScaledVector(_dir, d);
+  aimBone(lower, _C, _T);
 }
 
-// Kimme & Korn für die Ich-Ansicht (am Kamera-Objekt befestigt)
+// ---------- Streifen-Shirt (Copycat) ----------
+function stripeMaterial(h) {
+  const m = toon('#ffffff', { unique: true });
+  m.onBeforeCompile = sh => {
+    sh.uniforms.stripeF = { value: 24 / h };
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vStripe;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvStripe = position.y;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vStripe; uniform float stripeF;')
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( diffuse * mix(vec3(0.11,0.1,0.14), vec3(1.0), step(0.5, fract(vStripe * stripeF))), opacity );');
+  };
+  m.customProgramCacheKey = () => 'stripes';
+  return m;
+}
+
+// Kimme & Korn für die Ich-Ansicht (Kamera schaut entlang -Z; Korn-Spitze liegt genau in der Bildmitte)
 export function buildViewmodel() {
-  // Kamera schaut entlang -Z; die Korn-Spitze liegt exakt in der Bildmitte (0, 0)
   const g = new THREE.Group();
-  const dark = toon('#34313d'), black = toon('#1d1b24');
-  g.add(box(0.034, 0.03, 0.28, dark, 0, -0.07, -0.47));             // Gehäuse
-  g.add(box(0.03, 0.026, 0.22, toon('#ff8a1f'), 0, -0.064, -0.72)); // Handschutz
-  const barrel = cyl(0.006, 0.006, 0.18, '#1d1b24', 0, -0.05, -0.95, 8); barrel.rotation.x = Math.PI / 2; g.add(barrel);
-  // Kimme: zwei Pfosten mit Lücke
-  g.add(box(0.005, 0.012, 0.01, black, -0.0058, -0.011, -0.32));
-  g.add(box(0.005, 0.012, 0.01, black, 0.0058, -0.011, -0.32));
-  g.add(box(0.022, 0.005, 0.012, black, 0, -0.019, -0.32));
-  g.add(box(0.01, 0.034, 0.04, dark, 0, -0.038, -0.34));
-  // Korn mit gelber Spitze
-  g.add(box(0.0035, 0.03, 0.006, black, 0, -0.016, -0.9));
-  g.add(box(0.004, 0.005, 0.007, toon('#ffd83a'), 0, -0.0025, -0.9));
-  g.add(box(0.016, 0.012, 0.012, black, 0, -0.036, -0.9));
-  // Handschuhe
-  g.add(sphere(0.024, '#ffffff', 0.02, -0.095, -0.42, 10));
-  g.add(sphere(0.024, '#ffffff', -0.014, -0.088, -0.7, 10));
+  const gun = prop('blaster/blaster-d', { length: 0.6 });
+  gun.position.set(0.0, -0.3, -0.7); // Modell-Unterkante liegt bei 0 -> Oberkante knapp unter der Sichtlinie
+  g.add(gun);
+  const black = toon('#1d1b24'), purple = toon('#6a4fb0');
+  g.add(box(0.005, 0.014, 0.01, black, -0.0058, -0.012, -0.34));
+  g.add(box(0.005, 0.014, 0.01, black, 0.0058, -0.012, -0.34));
+  g.add(box(0.022, 0.006, 0.012, black, 0, -0.021, -0.34));
+  g.add(box(0.012, 0.05, 0.03, purple, 0, -0.045, -0.35));
+  g.add(box(0.0035, 0.032, 0.006, black, 0, -0.017, -0.92));
+  g.add(box(0.004, 0.005, 0.007, toon('#ffd83a'), 0, -0.0025, -0.92));
+  g.add(box(0.012, 0.05, 0.012, purple, 0, -0.056, -0.92));
+  g.add(box(0.01, 0.1, 0.01, purple, 0, -0.1, -0.92));
+  g.add(sphere(0.034, '#ffffff', 0.03, -0.2, -0.5, 12));
+  g.add(sphere(0.032, '#ffffff', -0.025, -0.18, -0.85, 12));
   g.traverse(o => { if (o.isMesh) o.renderOrder = 10; });
   return g;
 }
 
-function limb(len, r, color) {
-  // Gelenk-Gruppe; Mesh hängt nach unten
-  const pivot = new THREE.Group();
-  const m = capsule(r, Math.max(0.01, len - 2 * r), color, 0, -len / 2, 0);
-  pivot.add(m);
-  return pivot;
-}
-
-class Rig {
-  constructor(spec) {
+export class Rig {
+  constructor(gltf, spec) {
     this.spec = spec;
+    const s = spec.height / 3.08; this.s = s;
+    this.k = 1 / (100 * s); // Meter -> Knochen-Einheiten
     this.root = new THREE.Group();
     this.body = new THREE.Group(); this.root.add(this.body);
-    const s = spec;
-    // Beine
-    this.hips = new THREE.Group(); this.hips.position.y = s.legLen; this.body.add(this.hips);
-    this.legs = [];
-    for (const side of [-1, 1]) {
-      const thigh = limb(s.legLen * 0.52, s.legR, s.pants);
-      thigh.position.x = side * s.hipW;
-      const knee = limb(s.legLen * 0.5, s.legR * 0.9, s.pants2 || s.pants); knee.position.y = -s.legLen * 0.5;
-      thigh.add(knee);
-      const foot = box(s.footW, 0.16, s.footL, s.shoe, 0, -s.legLen * 0.5 + 0.02, s.footL * 0.3);
-      knee.add(foot);
-      this.hips.add(thigh);
-      this.legs.push({ thigh, knee, foot, side });
-    }
-    this.hips.add(box(s.hipW * 2 + s.legR * 2, 0.22, s.legR * 2.4, s.pants, 0, 0.02, 0));
-    // Oberkörper
-    this.torso = new THREE.Group(); this.torso.position.y = 0.08; this.hips.add(this.torso);
-    this.chest = capsule(s.chestR, s.torsoLen - s.chestR * 2 + 0.1, s.shirt, 0, s.torsoLen / 2, 0);
-    this.chest.scale.set(1, 1, 0.75);
-    this.torso.add(this.chest);
-    // Kopf
-    this.neck = new THREE.Group(); this.neck.position.y = s.torsoLen + 0.05; this.torso.add(this.neck);
-    this.neck.add(cyl(0.07, 0.08, 0.16, s.skin, 0, 0.06, 0, 8));
-    this.head = new THREE.Group(); this.head.position.y = 0.12 + s.headR; this.neck.add(this.head);
-    // Zielgruppe: Arme + Waffe drehen sich mit der Blickneigung
-    this.aim = new THREE.Group(); this.aim.position.set(0, s.torsoLen - 0.12, 0.02); this.torso.add(this.aim);
-    this.rifle = buildRifle(s.gunAccent);
-    this.rifle.group.position.set(0.1, -0.08, 0.35);
-    this.aim.add(this.rifle.group);
-    this.arms = [];
-    for (const side of [-1, 1]) {
-      const up = limb(s.armLen * 0.5, s.armR, s.sleeve);
-      up.position.set(side * (s.chestR + 0.02), 0, 0);
-      const low = limb(s.armLen * 0.5, s.armR * 0.9, s.forearm || s.skin); low.position.y = -s.armLen * 0.5;
-      up.add(low);
-      const hand = sphere(s.armR * 1.35, s.glove, 0, -s.armLen * 0.5, 0, 10); low.add(hand);
-      this.aim.add(up);
-      this.arms.push({ up, low, hand, side });
-    }
-    // Spritze (für Heil-Animation)
+    this.model = cloneSkinned(gltf.scene);
+    this.model.scale.setScalar(s);
+    this.body.add(this.model);
+    // Farben
+    let geoH = 0;
+    this.model.traverse(o => { if (o.isMesh) { o.frustumCulled = false; o.geometry.computeBoundingBox(); geoH = Math.max(geoH, o.geometry.boundingBox.max.y - o.geometry.boundingBox.min.y); } });
+    const conv = m => {
+      const c = spec.colors[m.name];
+      if (c === null) { const h = m.clone(); h.visible = false; return h; }
+      if (c === 'stripes') return stripeMaterial(geoH || 1);
+      return toon(c || '#cccccc');
+    };
+    this.model.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(conv) : conv(o.material); });
+    // Knochen + Ruhelage
+    this.bones = {}; this.rest = [];
+    this.model.traverse(o => {
+      if (o.isBone || /_end$/.test(o.name)) this.bones[o.name] = o;
+      if (o.isBone) this.rest.push([o, o.position.clone(), o.quaternion.clone()]);
+    });
+    const B = this.bones;
+    this.head = new THREE.Object3D(); this.head.position.set(0, 0.0048, 0.0004); B.Head.add(this.head);
+    this.headR = 0.46 * s;
+    // Animationen
+    this.mixer = new THREE.AnimationMixer(this.model);
+    const clip = n => gltf.animations.find(a => a.name.endsWith('|' + n));
+    this.actions = {};
+    for (const n of ['Idle', 'Walk', 'Victory', 'Defeat']) { const a = this.mixer.clipAction(clip(n)); a.play(); a.setEffectiveWeight(0); this.actions[n] = a; }
+    this.actions.Defeat.setLoop(THREE.LoopOnce); this.actions.Defeat.clampWhenFinished = true;
+    this.weights = { Idle: 1, Walk: 0, Victory: 0, Defeat: 0 };
+    this.actions.Idle.setEffectiveWeight(1);
+    // Waffe (Drehpunkt an der Schulter, neigt sich mit dem Blick)
+    this.gunPivot = new THREE.Group(); this.root.add(this.gunPivot);
+    this.gun = new THREE.Group(); this.gunPivot.add(this.gun);
+    this.gunModel = prop('blaster/blaster-d', { length: 0.8 });
+    this.gunModel.rotation.y = Math.PI; // Lauf zeigt nach +Z (Blickrichtung)
+    this.gun.add(this.gunModel);
+    if (spec.gunTint) this.gunModel.traverse(o => { if (o.isMesh) { o.material = o.material.clone(); o.material.color.set(spec.gunTint); } });
+    this.mag = null; this.gunModel.traverse(o => { if (o.name === 'magazine') this.mag = o; });
+    this.muzzle = new THREE.Object3D(); this.muzzle.position.set(0, 0.04, 0.42); this.gun.add(this.muzzle);
+    this.rifle = { muzzle: this.muzzle };
+    this.gripR = V(0, -0.09, -0.1); this.gripL = V(0, -0.04, 0.2);
+    this.magPoint = V(0, -0.16, 0.03); this.chargePoint = V(0.06, 0.06, -0.08);
+    this.spareMag = prop('blaster/clip-large', { height: 0.17 }); this.spareMag.visible = false; this.root.add(this.spareMag);
     this.syringe = new THREE.Group();
-    this.syringe.add(cyl(0.035, 0.035, 0.22, toon('#bff5ff', { transparent: true, opacity: 0.9 }), 0, 0, 0, 8));
-    this.syringe.add(cyl(0.012, 0.012, 0.3, '#16121f', 0, 0.2, 0, 6));
-    this.syringe.add(cyl(0.006, 0.001, 0.12, '#dddddd', 0, -0.17, 0, 6));
-    this.syringe.add(cyl(0.032, 0.032, 0.14, flat('#6bff6b'), 0, -0.02, 0, 8));
-    this.syringe.visible = false;
-    this.arms[0].hand.add(this.syringe);
+    this.syringe.add(cyl(0.03, 0.03, 0.2, toon('#bff5ff', { transparent: true, opacity: 0.85 }), 0, 0, 0, 10));
+    const juice = cyl(0.026, 0.026, 0.14, toon('#6bff6b', { emissive: '#2a9a2a' }), 0, -0.02, 0, 10); this.syringe.add(juice); this.juice = juice;
+    this.syringe.add(cyl(0.01, 0.01, 0.26, '#16121f', 0, 0.18, 0, 6));
+    this.syringe.add(cyl(0.04, 0.04, 0.015, '#16121f', 0, 0.31, 0, 10));
+    this.syringe.add(cyl(0.005, 0.001, 0.12, '#dddddd', 0, -0.16, 0, 6));
+    this.syringe.visible = false; this.root.add(this.syringe);
     // Schatten
-    this.shadow = new THREE.Mesh(new THREE.CircleGeometry(0.55, 20), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25, depthWrite: false }));
-    this.shadow.rotation.x = -Math.PI / 2; this.shadow.layers.set(LAYER_FX);
+    this.shadow = new THREE.Mesh(new THREE.CircleGeometry(0.5, 20), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25, depthWrite: false }));
+    this.shadow.rotation.x = -Math.PI / 2; this.shadow.position.y = 0.02; this.shadow.layers.set(LAYER_FX);
     this.root.add(this.shadow);
-
-    this.phase = 0; this.t = 0; this.recoil = 0; this.hitFlash = 0;
+    // Maße (Meter)
+    this.standEye = 2.62 * s;
+    this.shoulderY = 1.85 * s;
+    this.t = 0; this.recoil = 0; this.hitFlash = 0; this.hitReact = 0;
+    this.legYaw = 0;
+    this.onMagDrop = null; this._magDropped = false; this._deadStarted = false;
     this.meshes = []; this.root.traverse(o => { if (o.isMesh) this.meshes.push(o); });
-    this.standEye = s.legLen + 0.08 + s.torsoLen + 0.17 + s.headR;
   }
 
-  // Treffer-Zonen in Weltkoordinaten
-  hitboxes(pos, crouchAmt) {
+  hitboxes(pos) {
     this.root.updateMatrixWorld(true);
-    const hp = new THREE.Vector3(); this.head.getWorldPosition(hp);
+    const hp = this.head.getWorldPosition(V());
     return {
-      head: { x: hp.x, y: hp.y, z: hp.z, r: this.spec.headR * 1.05 },
-      body: { x: pos.x, z: pos.z, r: this.spec.bodyR, y0: pos.y, y1: hp.y - this.spec.headR * 0.8 },
+      head: { x: hp.x, y: hp.y, z: hp.z, r: this.headR },
+      body: { x: pos.x, z: pos.z, r: this.spec.bodyR, y0: pos.y, y1: hp.y - this.headR * 0.85 },
     };
   }
-  eyeHeight(crouchAmt) { return this.standEye * (1 - 0.38 * crouchAmt); }
+  eyeHeight(crouchAmt) { return this.standEye * (1 - 0.34 * crouchAmt); }
+  flash() { this.hitFlash = 0.12; this.hitReact = 1; }
+  local(x, y, z) { return V(x, y, z).applyMatrix4(this.root.matrixWorld); }
 
-  flash() { this.hitFlash = 0.12; }
-
-  // st: {speed, fwd, side, grounded, crouch(0..1), slide, pitch, reload(0..1|-1), syringe(0..1|-1), taunt(null|{type,t}), dead(0..1), vy}
-  animate(st, dt) {
-    this.t += dt;
-    const s = this.spec;
-    const sp = Math.min(1.4, st.speed / 5.2);
-    this.phase += dt * (3.2 + st.speed * 1.35) * (st.speed > 0.3 ? 1 : 0);
-    const ph = this.phase;
-    let legSwing = Math.sin(ph) * 0.75 * sp;
-    const bob = Math.abs(Math.sin(ph)) * 0.06 * sp;
-    const c = st.crouch;
-    // Grundhaltung
-    this.body.position.y = -c * s.legLen * 0.36 + (st.grounded ? bob : 0);
-    this.body.rotation.set(0, 0, 0);
-    this.torso.rotation.set(0.05 + c * 0.25 + sp * 0.06, 0, 0);
-    for (const L of this.legs) {
-      const sw = legSwing * (L.side > 0 ? 1 : -1) * (1 - c * 0.5);
-      L.thigh.rotation.set(-sw - c * 1.1, 0, 0);
-      L.knee.rotation.set(Math.max(0, Math.sin(ph + (L.side > 0 ? 0 : Math.PI) + 1.2)) * 1.1 * sp + c * 2.0, 0, 0);
-      // Seitwärts: Beine leicht spreizen
-      L.thigh.rotation.z = st.side * 0.12 * L.side * sp;
-    }
-    if (!st.grounded && !st.slide) {
-      for (const L of this.legs) { L.thigh.rotation.x = -0.7 + L.side * 0.25; L.knee.rotation.x = 1.3; }
-    }
-    if (st.slide) {
-      this.body.position.y = -s.legLen * 0.55;
-      this.torso.rotation.x = -0.55;
-      for (const L of this.legs) { L.thigh.rotation.x = -1.35 + (L.side > 0 ? 0.25 : 0); L.knee.rotation.x = L.side > 0 ? 0.2 : 0.9; }
-    }
-    // Arme halten das Gewehr
-    this.recoil = Math.max(0, this.recoil - dt * 9);
-    this.aim.rotation.set(-st.pitch - this.torso.rotation.x - this.recoil * 0.08, 0, 0);
-    this.aim.position.z = 0.02 - this.recoil * 0.05;
-    const [la, ra] = this.arms;
-    ra.up.rotation.set(-1.25, 0, -0.2); ra.low.rotation.set(-0.5, 0, 0);
-    la.up.rotation.set(-1.35, 0, 0.55); la.low.rotation.set(-0.35, 0, 0.3);
-    this.rifle.group.rotation.set(0, 0, 0);
-    this.rifle.group.position.set(0.1, -0.08, 0.35);
-    this.rifle.mag.visible = true;
-    this.syringe.visible = false;
-    if (st.reload >= 0) {
-      const k = Math.sin(Math.min(1, st.reload) * Math.PI);
-      this.rifle.group.rotation.z = k * 0.6; this.rifle.group.rotation.x = k * 0.3;
-      la.up.rotation.set(-0.9 + k * 0.5, 0, 0.3 + k * 0.2); la.low.rotation.set(-1.2 * k, 0, 0);
-      this.rifle.mag.visible = st.reload < 0.35 || st.reload > 0.6;
-    }
-    if (st.syringe >= 0) {
-      // Linker Arm lässt Waffe los, holt aus und rammt die Spritze ins Bein
-      const p = st.syringe;
-      this.syringe.visible = true;
-      const raise = p < 0.45 ? p / 0.45 : 1, stab = p < 0.45 ? 0 : Math.min(1, (p - 0.45) / 0.12);
-      la.up.rotation.set(-2.6 * raise * (1 - stab) + 0.3 * stab, 0, 0.35 - 0.2 * stab);
-      la.low.rotation.set(-0.6 * (1 - stab), 0, 0);
-      this.syringe.rotation.set(Math.PI, 0, 0);
-      this.rifle.group.rotation.z = -0.4;
-      if (stab > 0 && p < 0.75) this.body.position.y -= 0.04 * Math.sin(this.t * 60);
-    }
-    // Kopf leicht mitnicken
-    this.head.rotation.set(-st.pitch * 0.35 + Math.sin(ph * 2) * 0.03 * sp, 0, 0);
-    if (st.taunt) this.animateTaunt(st.taunt, dt);
-    if (st.dead > 0) {
-      const d = Math.min(1, st.dead);
-      this.body.rotation.x = -d * 1.45;
-      this.body.position.y = -d * 0.3;
-      for (const A of this.arms) A.up.rotation.set(-2.8 * d, 0, A.side * 0.6 * d);
-    }
-    if (this.hitFlash > 0) this.hitFlash -= dt;
-    this.headExtra?.(st, dt);
+  setWeights(target, dt, speed = 10) {
+    const k = Math.min(1, dt * speed);
+    for (const n in this.weights) { this.weights[n] += ((target[n] || 0) - this.weights[n]) * k; this.actions[n].setEffectiveWeight(this.weights[n]); }
   }
 
-  animateTaunt(tn, dt) {
-    const t = tn.t, [la, ra] = this.arms;
-    this.aim.rotation.x = 0;
-    if (tn.type === 'box') { // Pantomime: unsichtbare Wand
-      const k = Math.sin(t * 5);
-      la.up.rotation.set(-1.4, 0, 0.7 + k * 0.15); la.low.rotation.set(-1.4, 0, 0);
-      ra.up.rotation.set(-1.4, 0, -0.7 - k * 0.15); ra.low.rotation.set(-1.4, 0, 0);
-      this.rifle.group.position.set(0.25, -0.5, 0); this.rifle.group.rotation.set(1.4, 0, 0);
-      this.body.rotation.y = Math.sin(t * 2.5) * 0.4;
-    } else if (tn.type === 'dance') { // alberner Tanz
-      this.body.position.y += Math.abs(Math.sin(t * 9)) * 0.25;
-      this.body.rotation.z = Math.sin(t * 9) * 0.2;
-      la.up.rotation.set(-2.9, 0, 0.4 + Math.sin(t * 9) * 0.5);
-      ra.up.rotation.set(-0.4 + Math.sin(t * 9) * 0.6, 0, -0.9);
-      for (const L of this.legs) L.thigh.rotation.x = Math.sin(t * 9 + L.side) * 0.9;
-    } else if (tn.type === 'crouchspam') { // äfft dein Ducken nach
-      const k = (Math.sin(t * 14) + 1) / 2;
-      this.body.position.y = -k * this.spec.legLen * 0.4;
-      for (const L of this.legs) { L.thigh.rotation.x = -k * 1.2; L.knee.rotation.x = k * 2.1; }
-      this.head.rotation.z = Math.sin(t * 7) * 0.4;
-    } else { // flail / Sprung-Nachäffen
-      this.body.position.y += Math.abs(Math.sin(t * 6)) * 0.7;
-      la.up.rotation.set(-3 + Math.sin(t * 12) * 0.6, 0, 0.8);
-      ra.up.rotation.set(-3 + Math.cos(t * 12) * 0.6, 0, -0.8);
-      for (const L of this.legs) L.thigh.rotation.z = L.side * (0.3 + Math.sin(t * 6) * 0.3);
+  // st: {speed, fwd, side, grounded, crouch, slide, pitch, reload, syringe, taunt, dead, sprint}
+  animate(st, dt) {
+    this.t += dt;
+    const B = this.bones, s = this.s, K = this.k, H = this.spec.height;
+    const dead = st.dead > 0, taunt = st.taunt;
+    const fullBody = dead || (taunt && (taunt.type === 'dance' || taunt.type === 'flail'));
+    // ----- 1) Grundanimation -----
+    for (const [b, p, q] of this.rest) { b.position.copy(p); b.quaternion.copy(q); }
+    const moving = st.speed > 0.4 && st.grounded && !st.slide;
+    const w = { Idle: 1 };
+    if (dead) { w.Idle = 0; w.Defeat = 1; }
+    else if (fullBody) { w.Idle = 0; w.Victory = 1; }
+    else if (moving) { w.Idle = 0; w.Walk = 1; }
+    if (dead && !this._deadStarted) { this.actions.Defeat.reset().play(); this._deadStarted = true; }
+    if (!dead) this._deadStarted = false;
+    this.setWeights(w, dt, dead ? 20 : 10);
+    let targetLegYaw = 0, dir = 1;
+    if (moving) {
+      const ang = Math.atan2(-st.side, st.fwd); // + = nach links
+      if (Math.abs(ang) <= 1.95) targetLegYaw = Math.max(-1.15, Math.min(1.15, ang));
+      else { dir = -1; targetLegYaw = Math.max(-1.15, Math.min(1.15, ang - Math.sign(ang) * Math.PI)); }
     }
+    this.legYaw += (targetLegYaw - this.legYaw) * Math.min(1, dt * 12);
+    this.actions.Walk.timeScale = dir * Math.max(0.8, Math.min(2.8, st.speed / 2.3));
+    this.actions.Victory.timeScale = taunt?.type === 'flail' ? 1.8 : 1.15;
+    this.mixer.update(dt);
+
+    // ----- 2) Körperhaltung -----
+    const crouch = st.slide ? 1 : st.crouch;
+    const drop = (st.slide ? 0.46 : 0.33) * crouch * H;
+    B.Body.position.y -= drop * K;
+    if (taunt?.type === 'crouchspam') B.Body.position.y -= ((Math.sin(taunt.t * 14) + 1) / 2) * 0.33 * H * K;
+    if (!fullBody) {
+      B.Body.rotateY(this.legYaw);
+      const lean = st.slide ? -0.5 : (st.sprint ? 0.22 : 0.05) * Math.min(1, st.speed / 6);
+      B.Abdomen.rotateY(-this.legYaw * 0.55);
+      B.Torso.rotateY(-this.legYaw * 0.45);
+      B.Abdomen.rotateX(lean + crouch * 0.28 - this.hitReact * 0.3);
+      B.Torso.rotateX(-st.pitch * 0.3);
+      B.Neck.rotateX(-st.pitch * 0.4 + (st.slide ? 0.3 : 0));
+    }
+    this.hitReact = Math.max(0, this.hitReact - dt * 6);
+    // Füße: in der Luft anziehen, beim Rutschen ein Bein nach vorn
+    if (!fullBody) {
+      if (!st.grounded && !st.slide) { for (const f of [B.FootL, B.FootR]) { f.position.y += 0.3 * H * K * 0.5; f.position.z += 0.08 * K; } B.FootL.position.z += 0.12 * K; }
+      if (st.slide) { B.FootL.position.z += 0.5 * K; B.FootR.position.z -= 0.1 * K; B.FootR.position.y += 0.05 * K; }
+    }
+    this.model.updateMatrixWorld(true);
+    // ----- 3) Beine (IK zu den Füßen) -----
+    if (!dead) for (const side of ['L', 'R']) {
+      const tgt = B['Foot' + side].getWorldPosition(V());
+      const pole = B['PoleTarget' + side].getWorldPosition(V());
+      if (st.slide) pole.y += 0.4;
+      twoBoneIK(B['UpperLeg' + side], B['LowerLeg' + side], B['LowerLeg' + side + '_end'] || B['LowerLeg' + side], tgt, pole);
+    }
+
+    // ----- 4) Waffe -----
+    this.recoil = Math.max(0, this.recoil - dt * 10);
+    this.root.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
+    const shoulder = B.UpperArmR.getWorldPosition(V()).applyMatrix4(inv);
+    this.gunPivot.position.set(0, shoulder.y + 0.02, 0.02);
+    this.gunPivot.rotation.set(fullBody ? 0 : -st.pitch, 0, 0);
+    this.gun.position.set(-0.1, -0.1, 0.34 - this.recoil * 0.06);
+    this.gun.rotation.set(-this.recoil * 0.08, 0, 0);
+    let leftTarget = null, rightTarget = null, gunVisible = !fullBody;
+    this.spareMag.visible = false; this.syringe.visible = false;
+    if (this.mag) this.mag.visible = true;
+    this.gun.updateMatrixWorld(true);
+    const inGun = p => p.clone().applyMatrix4(this.gun.matrixWorld);
+    // Nachladen: Magazin raus (fällt), neues vom Gürtel, rein, Spannhebel ziehen
+    if (st.reload >= 0 && !dead) {
+      const t = st.reload;
+      const tilt = smooth(seg(t, 0, 0.12)) * (1 - smooth(seg(t, 0.86, 1)));
+      this.gun.rotation.z = tilt * 0.65; this.gun.rotation.x -= tilt * 0.3; this.gun.position.y -= tilt * 0.05; this.gun.position.x += tilt * 0.04;
+      this.gun.updateMatrixWorld(true);
+      const magOut = t > 0.22 && t < 0.64;
+      if (this.mag) this.mag.visible = !magOut;
+      if (t > 0.22 && !this._magDropped) { this._magDropped = true; this.onMagDrop?.(this.mag || this.gun); }
+      const pMag = inGun(this.magPoint), pGrip = inGun(this.gripL), pCharge = inGun(this.chargePoint);
+      const pBelt = this.local(0.26 * H / 2, 0.95 * s, 0.12);
+      const below = pMag.clone().add(V(0, -0.14, 0));
+      let p;
+      if (t < 0.12) p = pGrip.lerp(pMag, smooth(seg(t, 0, 0.12)));
+      else if (t < 0.24) p = pMag.lerp(below, smooth(seg(t, 0.12, 0.24)));
+      else if (t < 0.42) p = below.lerp(pBelt, smooth(seg(t, 0.24, 0.42)));
+      else if (t < 0.58) p = pBelt.lerp(below, smooth(seg(t, 0.42, 0.58)));
+      else if (t < 0.66) p = below.lerp(pMag, smooth(seg(t, 0.58, 0.66)));
+      else if (t < 0.78) p = pMag.lerp(pCharge, smooth(seg(t, 0.66, 0.78)));
+      else if (t < 0.87) p = pCharge.add(V(0, 0, -0.1 * Math.sin(seg(t, 0.78, 0.87) * Math.PI)).applyQuaternion(this.gun.getWorldQuaternion(Q())));
+      else p = pCharge.lerp(pGrip, smooth(seg(t, 0.87, 1)));
+      leftTarget = p;
+      if (t > 0.34 && t < 0.64) {
+        this.spareMag.visible = true;
+        this.spareMag.position.copy(p.clone().applyMatrix4(inv)).add(V(0, 0.02, 0));
+        this.spareMag.rotation.set(0, 0, tilt * 0.65);
+      }
+    } else this._magDropped = false;
+    // Spritze: Waffe nur noch rechts, links Spritze vom Gürtel, ausholen, ins Bein rammen
+    if (st.syringe >= 0 && !dead) {
+      const t = st.syringe;
+      this.gun.rotation.z = -0.55; this.gun.position.y -= 0.1; this.gun.position.x -= 0.04;
+      this.gun.updateMatrixWorld(true);
+      const pBelt = this.local(0.26 * H / 2, 0.92 * s, 0.12);
+      const pUp = this.local(0.3 * H / 2, 2.05 * s, 0.4);
+      const pThigh = this.local(0.2 * H / 2, 0.72 * s - (st.crouch ? 0.2 : 0), 0.24);
+      let p;
+      if (t < 0.22) p = pBelt;
+      else if (t < 0.45) p = pBelt.lerp(pUp, smooth(seg(t, 0.22, 0.45)));
+      else if (t < 0.53) p = pUp.lerp(pThigh, seg(t, 0.45, 0.53) ** 2);
+      else if (t < 0.78) p = pThigh.add(V(0, Math.sin(this.t * 55) * 0.012, 0));
+      else p = pThigh.lerp(pBelt, smooth(seg(t, 0.78, 1)));
+      leftTarget = p;
+      this.syringe.visible = t > 0.08 && t < 0.94;
+      this.syringe.position.copy(p.clone().applyMatrix4(inv));
+      this.syringe.rotation.set(t < 0.45 ? 0.4 : Math.PI - 0.35, 0, 0);
+      this.juice.scale.y = t > 0.55 ? Math.max(0.05, 1 - seg(t, 0.55, 0.78)) : 1;
+    }
+    // Pantomime: unsichtbare Wand abtasten
+    if (taunt?.type === 'box' && !dead) {
+      gunVisible = false;
+      const tt = taunt.t, k = Math.sin(tt * 5) * 0.12, h = this.shoulderY + 0.05;
+      leftTarget = this.local(0.26 + k, h + Math.cos(tt * 5) * 0.12, 0.5);
+      rightTarget = this.local(-0.26 - k, h - Math.cos(tt * 5) * 0.12, 0.5);
+    }
+    this.body.position.y = taunt?.type === 'flail' ? Math.abs(Math.sin(taunt.t * 7)) * 0.45 : taunt?.type === 'dance' ? Math.abs(Math.sin(taunt.t * 4.5)) * 0.1 : 0;
+    this.gun.visible = gunVisible && !dead;
+    this.gunModel.visible = this.gun.visible;
+    // ----- 5) Arme (IK an die Waffe) -----
+    if (!fullBody) {
+      const poleR = this.local(-0.7, this.shoulderY - 0.9, -0.3), poleL = this.local(0.7, this.shoulderY - 0.9, -0.1);
+      twoBoneIK(B.UpperArmR, B.LowerArmR, B.FistR, rightTarget || inGun(this.gripR), poleR);
+      twoBoneIK(B.UpperArmL, B.LowerArmL, B.FistL, leftTarget || inGun(this.gripL), poleL);
+    }
+    if (this.hitFlash > 0) this.hitFlash -= dt;
+    this.scarfTail && (this.scarfTail.rotation.z = 0.3 + Math.sin(this.t * 8) * 0.25 * Math.min(1, st.speed / 4));
   }
 }
 
 // ---------------- Mango ----------------
 export function buildMango() {
-  const rig = new Rig({
-    legLen: 1.0, legR: 0.075, hipW: 0.13, footW: 0.16, footL: 0.42,
-    torsoLen: 0.6, chestR: 0.24, headR: 0.24, armLen: 0.72, armR: 0.065, bodyR: 0.36,
-    skin: '#ffd83a', pants: '#6a3fb5', shoe: '#8a4a22', shirt: '#22b8a7', sleeve: '#22b8a7', glove: '#ffffff', forearm: '#ffd83a',
-    gunAccent: '#ff8a1f',
+  const rig = new Rig(charGltf('Casual_Bald'), {
+    height: 2.0, bodyR: 0.34,
+    colors: { Shirt: '#22b8a7', Skin: '#ffd83a', Pants: '#6a3fb5', Belt: '#8a4a22', Face: '#16121f' },
   });
-  const h = rig.head, R = 0.24;
-  const skin = toon('#ffd83a');
-  const headMesh = sphere(R, skin, 0, 0, 0, 20); headMesh.scale.set(0.92, 1.12, 0.95); h.add(headMesh);
-  // Schnauze mit Überbiss
-  const muzzle = sphere(R * 0.62, skin, 0, -R * 0.45, R * 0.55, 14); muzzle.scale.set(1.1, 0.75, 0.9); h.add(muzzle);
-  h.add(box(R * 0.9, 0.05, 0.05, '#ffffff', 0, -R * 0.52, R * 1.02));
-  // Clown-Nase
-  h.add(sphere(0.07, toon('#ff3b3b'), 0, -R * 0.05, R * 1.05, 12));
-  // Augen
-  for (const sx of [-1, 1]) {
-    const e = sphere(0.085, flat('#ffffff'), sx * 0.085, R * 0.25, R * 0.82, 14); e.scale.set(1, 1.15, 0.7); h.add(e);
-    h.add(sphere(0.022, flat('#16121f'), sx * 0.08, R * 0.25, R * 0.82 + 0.058, 8));
-    const brow = box(0.12, 0.025, 0.03, '#b34a00', sx * 0.09, R * 0.62, R * 0.8); brow.rotation.z = sx * 0.25; h.add(brow);
-  }
-  // Riesige Mango-Mähne: Zacken in alle Richtungen
-  const hair = new THREE.Group(); hair.position.y = R * 0.55; h.add(hair);
+  const deco = new THREE.Group(); deco.scale.setScalar(rig.k); rig.bones.Head.add(deco);
+  const cy = 0.48 * rig.s, R = rig.headR;
+  // Riesige Mango-Mähne
   const hairMat = toon('#ff8a1f'), hair2 = toon('#ff6a00');
+  const hair = new THREE.Group(); hair.position.set(0, cy + R * 0.5, -R * 0.12); deco.add(hair);
   let k = 0;
   for (let ring = 0; ring < 3; ring++) {
-    const n = [7, 9, 11][ring];
+    const n = [7, 10, 13][ring];
     for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + ring * 0.3;
-      const tilt = [0.35, 0.95, 1.5][ring];
-      const len = [0.7, 0.62, 0.45][ring] * (0.85 + (k++ % 3) * 0.12);
-      const spike = cone(0.13, len, (i + ring) % 2 ? hairMat : hair2, 0, 0, 0, 7);
+      const a = (i / n) * Math.PI * 2 + ring * 0.3, tilt = [0.3, 0.9, 1.45][ring];
+      const len = [0.6, 0.52, 0.4][ring] * (0.85 + (k++ % 3) * 0.12);
+      const spike = cone(0.11, len, (i + ring) % 2 ? hairMat : hair2, 0, 0, 0, 7);
       spike.geometry = spike.geometry.clone(); spike.geometry.translate(0, len / 2, 0);
-      spike.rotation.set(Math.sin(a) * tilt, 0, -Math.cos(a) * tilt);
-      spike.rotation.order = 'YXZ'; spike.rotation.y = 0;
-      const dir = new THREE.Vector3(Math.cos(a) * Math.sin(tilt), Math.cos(tilt), Math.sin(a) * Math.sin(tilt));
-      spike.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      spike.position.copy(dir).multiplyScalar(0.1);
+      const d = V(Math.cos(a) * Math.sin(tilt), Math.cos(tilt), Math.sin(a) * Math.sin(tilt));
+      spike.quaternion.setFromUnitVectors(V(0, 1, 0), d);
+      spike.position.copy(d).multiplyScalar(R * 0.4);
       hair.add(spike);
     }
   }
-  hair.add(sphere(0.2, hairMat, 0, 0.02, -0.02, 12));
-  // Mango-Blatt obendrauf
-  const leaf = sphere(0.12, toon('#3fbf4a'), 0.05, 0.78, 0, 10); leaf.scale.set(0.45, 1.3, 0.2); leaf.rotation.z = -0.5; hair.add(leaf);
+  hair.add(sphere(R * 0.8, hairMat, 0, 0, 0, 14));
+  const leaf = sphere(0.1, toon('#3fbf4a'), 0.05, 0.68, 0, 10); leaf.scale.set(0.45, 1.3, 0.2); leaf.rotation.z = -0.5; hair.add(leaf);
+  // Clownsnase
+  deco.add(sphere(R * 0.2, toon('#ff3b3b'), 0, cy - R * 0.08, R * 0.97, 14));
   // Fliege
-  rig.neck.add(cone(0.07, 0.12, toon('#ff3b3b'), -0.06, 0.02, 0.1, 4).rotateZ(Math.PI / 2));
-  rig.neck.add(cone(0.07, 0.12, toon('#ff3b3b'), 0.06, 0.02, 0.1, 4).rotateZ(-Math.PI / 2));
-  rig.hairGroup = hair;
-  rig.headMeshes = [];
-  h.traverse(o => { if (o.isMesh) rig.headMeshes.push(o); });
+  const bow = new THREE.Group(); bow.position.set(0, cy - R * 1.08, R * 0.5);
+  bow.add(cone(0.06, 0.1, toon('#ff3b3b'), -0.05, 0, 0, 4).rotateZ(Math.PI / 2)); bow.add(cone(0.06, 0.1, toon('#ff3b3b'), 0.05, 0, 0, 4).rotateZ(-Math.PI / 2));
+  deco.add(bow);
   rig.name = 'Mango';
   rig.meshes = []; rig.root.traverse(o => { if (o.isMesh) rig.meshes.push(o); });
   return rig;
@@ -290,41 +342,27 @@ export function buildMango() {
 
 // ---------------- Copycat ----------------
 export function buildCopycat() {
-  const rig = new Rig({
-    legLen: 1.3, legR: 0.055, hipW: 0.1, footW: 0.14, footL: 0.5,
-    torsoLen: 0.55, chestR: 0.2, headR: 0.23, armLen: 0.95, armR: 0.05, bodyR: 0.33,
-    skin: '#ffffff', pants: '#1d1b24', pants2: '#1d1b24', shoe: '#16121f', shirt: toon('#ffffff', { map: stripes }), sleeve: toon('#ffffff', { map: stripes }), glove: '#ffffff', forearm: toon('#ffffff', { map: stripes }),
-    gunAccent: '#ff4fa3',
+  const rig = new Rig(charGltf('OldClassy_Male'), {
+    height: 2.25, bodyR: 0.34, gunTint: '#ffc0e0',
+    colors: { Shirt: 'stripes', Skin: '#fbfbff', Pants: '#1d1b24', Belt: '#1d1b24', Detail: '#1d1b24', Face: '#16121f', Hair: '#16121f', Hat: null },
   });
-  // Hosenträger
-  for (const sx of [-1, 1]) { const b = box(0.04, 0.55, 0.02, '#16121f', sx * 0.11, 0.3, 0.15); rig.torso.add(b); }
-  const h = rig.head, R = 0.23;
-  const face = sphere(R, flat('#fbfbff'), 0, 0, 0, 20); face.material = toon('#ffffff'); face.scale.set(0.85, 1.25, 0.9); h.add(face);
-  // Schiefe Augen (eins groß, eins klein) + Lidstrich
-  const eyes = [[-0.085, 0.07, 0.1], [0.08, 0.04, 0.065]];
-  rig.pupils = [];
-  for (const [x, y, r] of eyes) {
-    const e = sphere(r, flat('#ffffff'), x, y, R * 0.78, 14); e.scale.z = 0.6; h.add(e);
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.012, 6, 18), toon('#16121f')); ring.position.set(x, y, R * 0.78 + 0.02); h.add(ring);
-    const p = sphere(r * 0.35, flat('#16121f'), x + 0.01, y - 0.01, R * 0.78 + r * 0.55, 8); h.add(p); rig.pupils.push(p);
-    const tear = box(0.012, 0.08, 0.01, '#16121f', x, y - r - 0.05, R * 0.8); h.add(tear);
-  }
-  // Hochgezogene Augenbrauen
-  for (const [x, rz] of [[-0.09, 0.4], [0.08, -0.1]]) { const b = box(0.1, 0.02, 0.02, '#16121f', x, 0.2, R * 0.78); b.rotation.z = rz; h.add(b); }
-  // Dümmliches Grinsen mit Hasenzähnen
-  const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.018, 6, 16, Math.PI), toon('#e8223a')); mouth.rotation.z = Math.PI; mouth.position.set(0.015, -0.1, R * 0.82); h.add(mouth);
-  h.add(box(0.035, 0.05, 0.02, '#ffffff', -0.005, -0.12, R * 0.86)); h.add(box(0.035, 0.05, 0.02, '#ffffff', 0.035, -0.12, R * 0.86));
-  h.add(sphere(0.03, toon('#ff8fb0'), -0.12, -0.05, R * 0.72, 8)); h.add(sphere(0.03, toon('#ff8fb0'), 0.12, -0.05, R * 0.72, 8));
-  // Baskenmütze (schief)
-  const beret = cyl(0.26, 0.2, 0.07, '#16121f', 0.03, R * 1.05, -0.02, 18); beret.rotation.z = 0.3; h.add(beret);
-  h.add(cyl(0.012, 0.012, 0.06, '#16121f', 0.07, R * 1.05 + 0.06, -0.02, 6));
+  const deco = new THREE.Group(); deco.scale.setScalar(rig.k); rig.bones.Head.add(deco);
+  const cy = 0.48 * rig.s, R = rig.headR;
+  // Schiefe Baskenmütze
+  const beret = new THREE.Group(); beret.position.set(0.08, cy + R * 1.02, -0.04); beret.rotation.z = 0.42;
+  const b1 = sphere(R * 0.72, toon('#e8223a'), 0, 0, 0, 16); b1.scale.set(1, 0.3, 1); beret.add(b1);
+  beret.add(cyl(0.012, 0.012, 0.07, '#e8223a', 0, R * 0.25, 0, 6));
+  deco.add(beret);
+  // Rote Lippen + Wangen
+  deco.add(sphere(R * 0.11, toon('#e8223a'), 0, cy - R * 0.62, R * 0.9, 10));
+  deco.add(sphere(R * 0.12, toon('#ff8fb0'), -R * 0.62, cy - R * 0.28, R * 0.72, 8));
+  deco.add(sphere(R * 0.12, toon('#ff8fb0'), R * 0.62, cy - R * 0.28, R * 0.72, 8));
   // Roter Schal
-  const scarf = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.045, 8, 16), toon('#e8223a')); scarf.rotation.x = Math.PI / 2; scarf.position.y = 0.06; rig.neck.add(scarf);
-  const tail = box(0.08, 0.25, 0.03, '#e8223a', 0.06, -0.08, 0.1); tail.rotation.z = 0.3; rig.neck.add(tail);
+  const scarf = new THREE.Mesh(new THREE.TorusGeometry(R * 0.5, R * 0.15, 8, 18), toon('#e8223a'));
+  scarf.rotation.x = Math.PI / 2; scarf.position.set(0, cy - R * 1.12, 0.02); scarf.scale.set(1.25, 1.1, 1); deco.add(scarf);
+  const tail = box(0.08, 0.26, 0.03, '#e8223a', 0.08, cy - R * 1.4, R * 0.5); deco.add(tail);
   rig.scarfTail = tail;
-  rig.headMeshes = []; h.traverse(o => { if (o.isMesh) rig.headMeshes.push(o); });
   rig.name = 'Copycat';
-  rig.headExtra = (st, dt) => { tail.rotation.z = 0.3 + Math.sin(rig.t * 8) * 0.25 * Math.min(1, st.speed / 4); };
   rig.meshes = []; rig.root.traverse(o => { if (o.isMesh) rig.meshes.push(o); });
   return rig;
 }

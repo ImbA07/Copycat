@@ -95,7 +95,7 @@ export class UI {
   hitmarker(kind) {
     const h = this.el.hit; h.className = kind === 'head' ? 'head' : kind === 'kill' ? 'kill' : '';
     h.innerHTML = '';
-    const d = kind === 'kill' ? 13 : kind === 'head' ? 11 : 9;
+    const d = kind === 'kill' ? 22 : kind === 'head' ? 19 : 17; // mit Abstand zur Mitte, damit das Ziel sichtbar bleibt
     for (const [x, y, r] of [[-1, -1, -45], [1, -1, 45], [-1, 1, 45], [1, 1, -45]]) {
       const i = document.createElement('i'); i.style.transform = `translate(${x * d}px, ${y * d}px) rotate(${r}deg)`; h.appendChild(i);
     }

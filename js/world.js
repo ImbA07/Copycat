@@ -266,6 +266,30 @@ export class NavGrid {
     return true;
   }
   connected(a, b) { return !!this.findPath(a, b, 20000); }
+  // Alle Zellen, die man vom Startpunkt aus mit höchstens maxDist Metern Laufweg erreicht
+  reachable(from, maxDist) {
+    const { w, h, cell } = this;
+    const [si, sj] = this.nearestFree(...this.toCell(from.x, from.z));
+    const dist = new Float32Array(w * h).fill(Infinity), open = new MinHeap(), out = [];
+    const start = sj * w + si; dist[start] = 0; open.push(start, 0);
+    while (open.size) {
+      const cur = open.pop(), dc = dist[cur];
+      if (dc === -1) continue;
+      out.push(cur);
+      const ci = cur % w, cj = (cur / w) | 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        if (!di && !dj) continue;
+        const ni = ci + di, nj = cj + dj;
+        if (ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
+        const n = nj * w + ni;
+        if (!this.canStep(cur, n)) continue;
+        const nd = dc + (di && dj ? 1.414 : 1) * cell;
+        if (nd <= maxDist && nd < dist[n]) { dist[n] = nd; open.push(n, nd); }
+      }
+      dist[cur] = -1;
+    }
+    return out.map(k => ({ ...this.toWorld(k % w, (k / w) | 0), y: this.height[k] }));
+  }
 }
 
 class MinHeap {

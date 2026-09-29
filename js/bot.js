@@ -3,7 +3,7 @@ import { PlayerModel } from './learner.js';
 
 const REACTION = 0.34;      // s bis er nach dem Entdecken schießt
 const PERCEPTION = 0.2;     // wahrgenommene Verzögerung
-const AIM_ERR = 1.5;        // Grad Grundstreuung beim Zielen
+const AIM_ERR = 1.9;        // Grad Grundstreuung beim Zielen
 const TURN = 7.5;           // rad/s maximale Drehgeschwindigkeit
 
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -151,6 +151,28 @@ export class CopycatBrain {
         }
         break;
       }
+      case 'hold': {
+        // Deckung -> kurz rauslehnen und feuern -> zurück
+        this.holdT -= dt;
+        if (this.holdPhase === 'hide') {
+          target = this.coverPoint;
+          const there = target && Math.hypot(target.x - me.pos.x, target.z - me.pos.z) < 0.7;
+          if (there) { cmd.crouch = !seen && this.coverLow; if (me.ammo < 12 && !me.reloading) cmd.reload = true; }
+          else this.holdT = Math.max(this.holdT, 0.2);
+          if (this.holdT <= 0 && !me.reloading) {
+            this.peekPoint = this.findPeek(this.coverPoint);
+            this.holdPhase = 'peek'; this.holdT = rnd(1.0, 1.9); this.peekHp = me.hp;
+            if (!this.peekPoint) this.setState('fight');
+          }
+        } else {
+          target = seen ? null : this.peekPoint;
+          if (seen) strafe = Math.random() < 0.02 ? true : strafe;
+          if (this.holdT <= 0 || me.hp < this.peekHp - 16 || me.ammo === 0) {
+            this.holdPhase = 'hide'; this.holdT = rnd(0.6, 1.2) + (1 - this.model.cap) * 0.6;
+          }
+        }
+        break;
+      }
       case 'cover': target = this.coverPoint; if (target && Math.hypot(target.x - me.pos.x, target.z - me.pos.z) < 0.8) { cmd.crouch = !seen; if (this.wantHeal) cmd.heal = true; } break;
       case 'flag': target = { x: 0, z: 0 }; strafe = seen; break;
       case 'ambush': target = null; cmd.crouch = this.stateT > 0.5 && !seen; break;
@@ -191,7 +213,10 @@ export class CopycatBrain {
       wx /= l; wz /= l;
       const sy = Math.sin(me.yaw), cy = Math.cos(me.yaw);
       cmd.fwd = wx * sy + wz * cy; cmd.side = -wx * cy + wz * sy;
-      cmd.sprint = !seen && this.state !== 'ambush' && cmd.fwd > 0.5;
+      const known = this.lastSeen && t - this.lastSeenTime < 8 ? this.lastSeen : this.heard?.pos;
+      const nearKnown = known && Math.hypot(known.x - me.pos.x, known.z - me.pos.z) < 20;
+      const bold = this.model.cap > 0.5 || t < 5;
+      cmd.sprint = !seen && this.state !== 'ambush' && this.state !== 'hold' && cmd.fwd > 0.5 && (!nearKnown || bold);
     }
     if (this.state === 'hunt' && !seen && l > 0.01) { // beim Suchen in Laufrichtung schauen
       const ty = Math.atan2(wx, wz); if (!aimPoint || t - this.lastSeenTime > 4) me.yaw += Math.max(-TURN * dt * 0.6, Math.min(TURN * dt * 0.6, angDiff(ty, me.yaw)));
@@ -233,7 +258,7 @@ export class CopycatBrain {
     const hpLow = me.hp < 40, canHeal = me.syringes > 0 && me.hp < 55;
     // Mango heilt / lädt nach -> drücken! (lernt, wann du heilst)
     const ht = this.model.healThreshold;
-    const pushNow = (p.healing || p.reloading) && dist < 25 || (ht !== null && p.hp <= ht + 8 && p.syringes > 0);
+    const pushNow = ((p.healing || p.reloading) && dist < 25 && this.model.cap > 0.2) || (this.model.cap > 0.35 && ht !== null && p.hp <= ht + 8 && p.syringes > 0);
     if (this.state === 'cover') {
       const done = this.stateT > 5 || (!me.reloading && !me.healing && (!this.wantHeal || me.hp > 70) && this.stateT > 1.2);
       if (!done) return;
@@ -249,7 +274,20 @@ export class CopycatBrain {
       const flagEager = me.hp >= p.hp - 10 || this.model.flagRushRate > 0.5 || g.flag.progress.player > 2.5;
       if (!seen || meIn || flagEager) { if (!(seen && pIn && !meIn && dist < 6)) { this.setState('flag'); return; } }
     } else if (t > 84 && this.model.flagRushRate > 0.5 && !seen) { this.setState('flag'); return; }
-    if (seen) { this.setState('fight'); return; }
+    if (this.state === 'hold') {
+      const lost = !seen && t - this.lastSeenTime > 3;
+      if (dist < 7 || lost || this.stateT > 9 || pushNow) { this.setState(dist < 7 || pushNow ? 'fight' : 'hunt'); }
+      return;
+    }
+    if (seen) {
+      // Vorsicht: anfangs fast immer Deckung + rauslehnen; später seltener (oder gegen Stürmer bewusst)
+      const caution = 1 - this.model.cap * 0.75 + (this.model.aggression > 0.35 && this.model.cap > 0.3 ? 0.25 : 0);
+      if (prev !== 'fight' && dist > 8 && !pushNow && !(p.hp < 30 && me.hp > 60) && Math.random() < caution) {
+        const cp = this.findCover(6);
+        if (cp) { this.coverPoint = cp; this.coverLow = cp.low; this.holdPhase = 'hide'; this.holdT = rnd(0.4, 0.9); this.setState('hold'); return; }
+      }
+      this.setState('fight'); return;
+    }
     // Hinterhalt gegen Stürmer
     if (prev === 'fight' && this.model.aggression > 0.3 && Math.random() < 0.5 && t - this.lastSeenTime < 1) { this.setState('ambush'); return; }
     if (this.state === 'ambush' && this.stateT < 3.5) return;
@@ -294,19 +332,37 @@ export class CopycatBrain {
     return { x: dx / l, z: dz / l };
   }
 
-  findCover() {
+  findCover(maxR = 10) {
     const g = this.game, me = g.bot, p = g.player, world = g.arena.world, nav = g.arena.nav;
     const from = { x: p.pos.x, y: p.eyeY, z: p.pos.z };
     let best = null;
     for (let i = 0; i < 28; i++) {
-      const a = Math.random() * Math.PI * 2, r = rnd(2, 10);
+      const a = Math.random() * Math.PI * 2, r = rnd(1.5, maxR);
       const x = me.pos.x + Math.cos(a) * r, z = me.pos.z + Math.sin(a) * r;
       const [ci, cj] = nav.toCell(x, z), k = cj * nav.w + ci;
       if (nav.blocked[k] || nav.height[k] > 0.3) continue;
       if (Math.hypot(x - p.pos.x, z - p.pos.z) < 6) continue;
       if (world.lineOfSight(from, { x, y: 1.0, z })) continue;
-      const s = r + Math.random();
-      if (!best || s < best.s) best = { x, z, s };
+      const low = world.lineOfSight(from, { x, y: 2.0, z }); // nur hinter halbhoher Deckung -> ducken
+      const s = r + Math.random() + (low ? 1.5 : 0);
+      if (!best || s < best.s) best = { x, z, s, low };
+    }
+    return best;
+  }
+
+  // Punkt nahe der Deckung, von dem aus Copycat Mango sehen kann
+  findPeek(cp) {
+    const g = this.game, p = g.player, world = g.arena.world, nav = g.arena.nav;
+    if (!cp) return null;
+    const target = { x: p.pos.x, y: p.eyeY, z: p.pos.z };
+    let best = null;
+    for (let i = 0; i < 24; i++) {
+      const a = Math.random() * Math.PI * 2, r = rnd(0.8, 2.8);
+      const x = cp.x + Math.cos(a) * r, z = cp.z + Math.sin(a) * r;
+      const [ci, cj] = nav.toCell(x, z), k = cj * nav.w + ci;
+      if (nav.blocked[k] || nav.height[k] > 0.3) continue;
+      if (!world.lineOfSight({ x, y: g.bot.rig.standEye, z }, target)) continue;
+      if (!best || r < best.r) best = { x, z, r };
     }
     return best;
   }

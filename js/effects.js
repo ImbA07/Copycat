@@ -1,6 +1,7 @@
 // Comic-Effekte: Leuchtspuren, Mündungsfeuer, Einschläge, Explosionen, Trümmer, Schadenszahlen.
 import * as THREE from 'three';
 import { toon, LAYER_FX } from './toon.js';
+import { prop } from './assets.js';
 
 const starTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
@@ -83,6 +84,19 @@ export class Effects {
       m.rotation.x += spin.x * dt; m.rotation.z += spin.z * dt; if (k < 0.25) m.scale.setScalar(size * k / 0.25);
     } });
   }
+  // Leeres Magazin fällt beim Nachladen zu Boden
+  dropMag(src) {
+    const m = prop('blaster/clip-large', { height: 0.17 });
+    src.getWorldPosition(m.position); m.position.y -= 0.05;
+    src.getWorldQuaternion(m.quaternion);
+    this.scene.add(m);
+    const v = { x: (Math.random() - 0.5) * 0.8, y: -0.5, z: (Math.random() - 0.5) * 0.8 }, spin = (Math.random() - 0.5) * 8;
+    this.items.push({ obj: m, life: 3, max: 3, update: (it, k, dt) => {
+      if (m.position.y > 0.05) { v.y -= 18 * dt; m.position.x += v.x * dt; m.position.y += v.y * dt; m.position.z += v.z * dt; m.rotation.x += spin * dt; }
+      else { m.position.y = 0.05; m.rotation.x = Math.PI / 2; }
+      if (k < 0.15) m.scale.setScalar(k / 0.15);
+    } });
+  }
   breakApart(collider, color) {
     const c = collider, pos = { x: (c.min.x + c.max.x) / 2, y: c.min.y, z: (c.min.z + c.max.z) / 2 };
     for (let i = 0; i < 12; i++) this.debrisPiece(pos, color, 0.15 + Math.random() * 0.25, 6);
@@ -94,14 +108,15 @@ export class Effects {
     if (this.v.z > 1) return null;
     return { x: (this.v.x * 0.5 + 0.5) * innerWidth, y: (-this.v.y * 0.5 + 0.5) * innerHeight };
   }
-  floatText(p, text, cls, life = 800) {
+  floatText(p, text, cls, life = 800, off = [0, 0]) {
     const s = this.project(p); if (!s) return;
     const el = document.createElement('div'); el.className = cls; el.textContent = text;
-    el.style.left = (s.x + (Math.random() - 0.5) * 30) + 'px'; el.style.top = s.y + 'px';
+    el.style.left = (s.x + off[0] + (Math.random() - 0.5) * 16) + 'px'; el.style.top = (s.y + off[1]) + 'px';
     this.layer.appendChild(el); setTimeout(() => el.remove(), life);
   }
-  damageNumber(p, dmg, head) { this.floatText(p, '-' + Math.round(dmg), head ? 'dmg head' : 'dmg'); }
-  pow(p, word) { this.floatText(p, word, 'pow', 650); }
+  // seitlich versetzt, damit das Ziel nicht verdeckt wird
+  damageNumber(p, dmg, head) { this.floatText(p, '-' + Math.round(dmg), head ? 'dmg head' : 'dmg', 800, [55, -35]); }
+  pow(p, word) { this.floatText(p, word, 'pow', 650, [-80, -70]); }
 
   update(dt) {
     for (let i = this.items.length - 1; i >= 0; i--) {
