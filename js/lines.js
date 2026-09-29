@@ -31,5 +31,19 @@ export const LINES = {
   learn_slide: { mood: 'fies', lines: ['Du rutschst so gerne! Ich jetzt auch!'] },
   learn_dash: { mood: 'fies', lines: ['Dash, Dash, Dash! Das kann ich auch!'] },
   learn_high: { mood: 'fies', lines: ['Du stehst so gerne oben! Ich weiß das!'] },
+  // Konter-Pläne (Copycat verrät, dass er dich durchschaut hat)
+  counter_bait: { mood: 'fies', lines: ['Du stürmst immer rein? Dann warte ich hier auf dich!', 'Na komm, renn mir ruhig direkt vor die Nase!'] },
+  counter_flank: { mood: 'fies', lines: ['Campen bringt dir nix. Ich komm von der Seite!', 'Versteck dich ruhig. Ich nehme einen anderen Weg!'] },
+  counter_rushClose: { mood: 'frech', lines: ['Aus der Nähe triffst du nix. Also komm ich näher!', 'Nahkampf! Da bist du schlecht!'] },
+  counter_keepFar: { mood: 'frech', lines: ['Auf Distanz bist du blind. Ich bleib schön weit weg!', 'Von weitem triffst du ja nix!'] },
+  counter_high: { mood: 'frech', lines: ['Du willst wieder nach oben? Da bin ich schon!', 'Heute gehört der Ausblick mir!'] },
+  // Schwächen ausnutzen
+  push_heal: { mood: 'aufgeregt', lines: ['Am Heilen? Jetzt komm ich!', 'Spritze? Zu spät!'] },
+  push_reload: { mood: 'aufgeregt', lines: ['Nachladen? Schlechte Idee!', 'Magazin leer? Perfekt!'] },
+  push_low: { mood: 'fies', lines: ['Nur noch ein bisschen Leben, was? Gleich hab ich dich!', 'Du wackelst ja schon!'] },
+  // Eigene Lage
+  self_heal: { mood: 'wuetend', lines: ['Moment! Kurz verarzten!', 'Aua. Erst mal Pflaster drauf!'] },
+  self_rush_low: { mood: 'wuetend', lines: ['Egal! Du bist genauso kaputt wie ich!', 'Alles oder nichts!'] },
+  self_kite: { mood: 'frech', lines: ['Ich halt dich schön auf Abstand!'] },
   learn_nothing: { mood: 'frech', lines: ['Noch weiß ich nicht viel über dich. Noch!'] },
 };

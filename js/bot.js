@@ -1,9 +1,11 @@
-// Copycat: KI-Gegner. Grundkönnen ist "ok" und bleibt gleich – besser wird er NUR durch das, was er über dich lernt.
+// Copycat: KI-Gegner. Grundkönnen ist "ok". Besser wird er durch das, was er über dich lernt (cap),
+// und durch Taktik (tac, wächst bis Runde 50): Konter-Pläne gegen deinen Stil, Schwächen ausnutzen, kluges Heilen.
+// Er bleibt immer besiegbar: Reaktionszeit und Zielstreuung haben feste Untergrenzen.
 import { PlayerModel } from './learner.js';
 
-const REACTION = 0.34;      // s bis er nach dem Entdecken schießt
+const REACTION = 0.34;      // s bis er nach dem Entdecken schießt (ab Runde 15 langsam bis 0,27 s)
 const PERCEPTION = 0.2;     // wahrgenommene Verzögerung
-const AIM_ERR = 1.9;        // Grad Grundstreuung beim Zielen
+const AIM_ERR = 1.9;        // Grad Grundstreuung beim Zielen (ab Runde 15 langsam bis 1,55°)
 const TURN = 7.5;           // rad/s maximale Drehgeschwindigkeit
 
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -27,7 +29,35 @@ export class CopycatBrain {
     this.trickT = 0; this.stuckT = 0; this.lastPos = null;
     this.history.length = 0;
     this.lookAround = 0; this.wantHeal = false;
+    this.window = null; this.oppKey = null; this.oppTake = false; this.kite = false;
+    this.flankPt = null; this.highPt = null; this.planT = 0; this.ambushLook = null; this.pendingSay = null;
     this.model.onRoundStart();
+    this.choosePlan(true);
+  }
+  get reaction() { return REACTION - 0.07 * this.model.late; }
+  get aimErrBase() { return AIM_ERR * (1 - 0.18 * this.model.late); }
+  say(trig, opt = {}) { this.game.dialog?.say(trig, { cooldown: 12, chance: 0.75, ...opt }); }
+
+  // Mango ist gerade verwundbar (heilt / lädt nach) – nur wenn Copycat es sieht oder hört
+  noticeWindow(type, dur) { this.window = { type, until: this.game.roundTime + dur }; }
+
+  // Konter-Plan gegen Mangos Spielstil (je höher das Taktik-Level, desto öfter)
+  choosePlan(roundStart = false) {
+    const m = this.model, tac = m.tac;
+    const acc = k => { const [n, h] = m.range[k]; return n >= 12 ? h / n : null; };
+    const ac = acc('close'), af = acc('far'), am = acc('mid');
+    const opts = [['standard', 1.2]];
+    if (m.aggression > 0.3) opts.push(['bait', 7 * m.aggression * tac]);
+    if (m.camping > 0.35) opts.push(['flank', 7 * m.camping * tac]);
+    if (ac !== null && (am ?? af) !== null && ac < (am ?? af) - 0.1) opts.push(['rushClose', 3 * tac]);
+    if (af !== null && (am ?? ac) !== null && af < (am ?? ac) - 0.1) opts.push(['keepFar', 3 * tac]);
+    if (m.playTime > 30 && m.highTime / m.playTime > 0.25) opts.push(['high', 3 * tac]);
+    let sum = 0; for (const [, w] of opts) sum += w;
+    let r = Math.random() * sum, plan = 'standard';
+    for (const [k, w] of opts) { r -= w; if (r <= 0) { plan = k; break; } }
+    // Ansage (wird gesprochen, sobald Copycat gerade nichts anderes sagt)
+    if (plan !== 'standard' && (plan !== m.plan || Math.random() < 0.35)) this.pendingSay = { trig: 'counter_' + plan, from: roundStart ? 3.5 : this.game.roundTime, until: roundStart ? 14 : this.game.roundTime + 6 };
+    m.plan = plan; this.planT = 0;
   }
 
   // Wahrnehmung: Mangos Zustand mit Verzögerung
@@ -64,6 +94,8 @@ export class CopycatBrain {
     });
     if (seen) { this.seenT += dt; this.lastSeen = { ...p.pos }; this.lastSeenTime = t; }
     else this.seenT = 0;
+    const ps = this.pendingSay;
+    if (ps && t >= ps.from) { if (t > ps.until || g.dialog?.say(ps.trig, { cooldown: 0 })) this.pendingSay = null; }
     this.stateT += dt; this.decideT -= dt; this.tauntCd -= dt; this.trickT -= dt;
 
     // ---------- Entscheiden ----------
@@ -87,6 +119,8 @@ export class CopycatBrain {
         const fx = tgt.x - me.pos.x, fz = tgt.z - me.pos.z, l = Math.hypot(fx, fz) || 1;
         const rx = -fz / l, rz = fx / l;
         aimPoint = { x: tgt.x - rx * bias * 1.2, y: (tgt.y || 0) + 1.3, z: tgt.z - rz * bias * 1.2 };
+      } else if (this.state === 'ambush' && this.ambushLook) {
+        aimPoint = { x: this.ambushLook.x, y: 1.4, z: this.ambushLook.z }; // Vorzielen: da kommt Mango gleich her
       } else if (this.path && this.path.length > 1) {
         const w = this.path[1]; aimPoint = { x: w.x, y: eye.y, z: w.z };
       }
@@ -107,7 +141,7 @@ export class CopycatBrain {
     if (this.aimErrT <= 0) {
       this.aimErrT = 0.18;
       const settle = Math.max(0.45, 1.6 - this.trackT * 1.2);
-      this.aimErr = { x: rnd(-1, 1) * AIM_ERR * settle, y: rnd(-1, 1) * AIM_ERR * settle * 0.7 };
+      this.aimErr = { x: rnd(-1, 1) * this.aimErrBase * settle, y: rnd(-1, 1) * this.aimErrBase * settle * 0.7 };
     }
     if (this.lookAround > 0 && !seen) { this.lookAround -= dt; me.yaw += dt * 2.2; }
     else if (aimPoint) {
@@ -117,7 +151,7 @@ export class CopycatBrain {
       const dyaw = angDiff(ty, me.yaw), maxT = TURN * dt;
       me.yaw += Math.max(-maxT, Math.min(maxT, dyaw));
       me.pitch += Math.max(-maxT, Math.min(maxT, tp - me.pitch));
-      if (seen && this.seenT > REACTION && Math.abs(dyaw) < (this.barrelAim ? 0.05 : 0.12) && p.alive) wantFire = true;
+      if (seen && this.seenT > this.reaction && Math.abs(dyaw) < (this.barrelAim ? 0.05 : 0.12) && p.alive) wantFire = true;
     }
 
     // ---------- Feuerstöße ----------
@@ -136,14 +170,25 @@ export class CopycatBrain {
       }
     }
     cmd.fire = wantFire && !me.taunt;
-    if (me.ammo === 0 || (me.ammo < 6 && !seen && t - this.lastSeenTime > 1.5)) cmd.reload = true;
+    if (me.ammo === 0 || (me.ammo < 6 + Math.round(this.model.tac * 5) && !seen && t - this.lastSeenTime > 1.5 && this.state !== 'push')) cmd.reload = true;
 
     // ---------- Bewegung ----------
     let target = null, strafe = false;
     switch (this.state) {
+      case 'push': {
+        // Druck machen: direkt drauf, keine Deckung
+        strafe = seen && dist < 9;
+        const tgt = seen ? p.pos : (this.lastSeen && t - this.lastSeenTime < 5 ? this.lastSeen : this.heard?.pos);
+        if (tgt && !(seen && dist < 4.5)) target = tgt;
+        break;
+      }
+      case 'flank': target = this.flankPt; break;
+      case 'high': target = this.highPt; break;
       case 'fight': {
         strafe = true;
-        const want = this.model.preferredRange();
+        const plan = this.model.plan;
+        let want = plan === 'rushClose' ? 7 : plan === 'keepFar' ? 21 : this.model.preferredRange();
+        if (this.kite || plan === 'bait') want = Math.max(want, 14);
         if (dist > want + 3) target = p.pos; // näher ran
         else if (dist < want - 3) { // Abstand gewinnen
           const ax = me.pos.x - p.pos.x, az = me.pos.z - p.pos.z, l = Math.hypot(ax, az) || 1;
@@ -215,10 +260,10 @@ export class CopycatBrain {
       cmd.fwd = wx * sy + wz * cy; cmd.side = -wx * cy + wz * sy;
       const known = this.lastSeen && t - this.lastSeenTime < 8 ? this.lastSeen : this.heard?.pos;
       const nearKnown = known && Math.hypot(known.x - me.pos.x, known.z - me.pos.z) < 20;
-      const bold = this.model.cap > 0.5 || t < 5;
-      cmd.sprint = !seen && this.state !== 'ambush' && this.state !== 'hold' && cmd.fwd > 0.5 && (!nearKnown || bold);
+      const bold = this.model.cap > 0.5 || t < 5 || this.model.tac > 0.4;
+      cmd.sprint = !seen && this.state !== 'ambush' && this.state !== 'hold' && cmd.fwd > 0.5 && (!nearKnown || bold || this.state === 'push' || this.state === 'flank');
     }
-    if (this.state === 'hunt' && !seen && l > 0.01) { // beim Suchen in Laufrichtung schauen
+    if ((this.state === 'hunt' || this.state === 'flank' || this.state === 'high' || this.state === 'push') && !seen && l > 0.01) { // beim Suchen in Laufrichtung schauen
       const ty = Math.atan2(wx, wz); if (!aimPoint || t - this.lastSeenTime > 4) me.yaw += Math.max(-TURN * dt * 0.6, Math.min(TURN * dt * 0.6, angDiff(ty, me.yaw)));
     }
 
@@ -253,45 +298,132 @@ export class CopycatBrain {
   }
 
   decide(seen, dist) {
-    const g = this.game, me = g.bot, p = g.player, t = g.roundTime;
+    const g = this.game, me = g.bot, p = g.player, t = g.roundTime, m = this.model, tac = m.tac;
     const prev = this.state;
-    const hpLow = me.hp < 40, canHeal = me.syringes > 0 && me.hp < 55;
-    // Mango heilt / lädt nach -> drücken! (lernt, wann du heilst)
-    const ht = this.model.healThreshold;
-    const pushNow = ((p.healing || p.reloading) && dist < 25 && this.model.cap > 0.2) || (this.model.cap > 0.35 && ht !== null && p.hp <= ht + 8 && p.syringes > 0);
+    const knownRecent = seen || t - this.lastSeenTime < 2.5;
+    // ---------- Gelegenheiten: Mango heilt / lädt nach / hat kaum Leben / fast leeres Magazin ----------
+    let win = this.window && t < this.window.until ? this.window.type : null;
+    if (!win && seen && p.ammo <= 2 && !p.reloading) win = 'reload';
+    const pWeak = knownRecent && p.hp <= 35;
+    const iWeak = me.hp <= 40, canHeal = me.syringes > 0 && me.hp < 60;
+    // Einmal pro Gelegenheit entscheiden, ob Copycat sie erkennt (steigt mit dem Taktik-Level; anfangs selten)
+    const opp = win ? 'win:' + win : pWeak ? 'weak' : null;
+    if (opp !== this.oppKey) { this.oppKey = opp; this.oppTake = !!opp && Math.random() < 0.15 + 0.85 * tac; }
+    let pressure = false;
+    if (opp && this.oppTake && dist < 30) pressure = !iWeak || !!win || p.hp <= me.hp + 10; // selbst angeschlagen: nur wenn Mango genauso schlecht dran ist
+    // Vorahnung: heilt meist bei ~X Leben -> kurz davor schon Druck machen
+    const ht = m.healThreshold;
+    if (!pressure && !iWeak && tac > 0.3 && m.cap > 0.35 && ht !== null && knownRecent && p.hp <= ht + 8 && p.syringes > 0) pressure = true;
+    if (pressure) {
+      if (this.state !== 'push') this.say(win === 'heal' ? 'push_heal' : win === 'reload' ? 'push_reload' : 'push_low', { chance: 0.85, cooldown: 7 });
+      this.setState('push'); return;
+    }
+    if (this.state === 'push' && this.stateT < 1.2 && (seen || t - this.lastSeenTime < 1.5)) return; // kurz dranbleiben
     if (this.state === 'cover') {
       const done = this.stateT > 5 || (!me.reloading && !me.healing && (!this.wantHeal || me.hp > 70) && this.stateT > 1.2);
       if (!done) return;
       this.wantHeal = false;
     }
-    if (seen && !pushNow && ((hpLow && canHeal) || (me.reloading && dist < 20))) {
-      const cp = this.findCover();
-      if (cp) { this.coverPoint = cp; this.wantHeal = hpLow && canHeal; this.setState('cover'); return; }
+    // ---------- Selbst angeschlagen: heilen oder alles auf eine Karte? ----------
+    this.kite = false;
+    if (iWeak && knownRecent) {
+      if (canHeal) {
+        // direkt vor Mango heilen wäre tödlich – mit Taktik lieber kämpfen, wenn Mango auch wackelt
+        const tooClose = seen && dist < 7 && tac > 0.35 && p.hp <= me.hp + 25;
+        if (tooClose) { if (prev !== 'fight') this.say('self_rush_low', { chance: 0.6 }); this.setState('fight'); return; }
+        const cp = this.findCover();
+        if (cp) { this.coverPoint = cp; this.wantHeal = true; this.say('self_heal', { chance: 0.6, cooldown: 15 }); this.setState('cover'); return; }
+      } else if (tac > 0.25) { this.kite = true; if (prev !== 'fight') this.say('self_kite', { chance: 0.4, cooldown: 20 }); }
     }
-    if (!seen && canHeal && hpLow) this.wantHeal = true;
+    if (seen && me.reloading && dist < 20 && !pWeak) {
+      const cp = this.findCover();
+      if (cp) { this.coverPoint = cp; this.wantHeal = false; this.setState('cover'); return; }
+    }
+    if (!seen && canHeal && iWeak) this.wantHeal = true;
+    // ---------- Flagge ----------
     if (g.flag.active) {
       const pIn = Math.hypot(p.pos.x, p.pos.z) < 3.2, meIn = Math.hypot(me.pos.x, me.pos.z) < 3.2;
-      const flagEager = me.hp >= p.hp - 10 || this.model.flagRushRate > 0.5 || g.flag.progress.player > 2.5;
+      const flagEager = me.hp >= p.hp - 10 || m.flagRushRate > 0.5 || g.flag.progress.player > 2.5;
       if (!seen || meIn || flagEager) { if (!(seen && pIn && !meIn && dist < 6)) { this.setState('flag'); return; } }
-    } else if (t > 84 && this.model.flagRushRate > 0.5 && !seen) { this.setState('flag'); return; }
+    } else if (t > 84 && m.flagRushRate > 0.5 && !seen) { this.setState('flag'); return; }
     if (this.state === 'hold') {
       const lost = !seen && t - this.lastSeenTime > 3;
-      if (dist < 7 || lost || this.stateT > 9 || pushNow) { this.setState(dist < 7 || pushNow ? 'fight' : 'hunt'); }
+      if (dist < 7 || lost || this.stateT > 9) { this.setState(dist < 7 ? 'fight' : 'hunt'); }
       return;
     }
+    // ---------- Konter-Plan ab und zu neu wählen (nicht mitten im Gefecht) ----------
+    this.planT += 0.2;
+    if (!seen && this.planT > 9) this.choosePlan();
+    const plan = m.plan;
     if (seen) {
-      // Vorsicht: anfangs fast immer Deckung + rauslehnen; später seltener (oder gegen Stürmer bewusst)
-      const caution = 1 - this.model.cap * 0.75 + (this.model.aggression > 0.35 && this.model.cap > 0.3 ? 0.25 : 0);
-      if (prev !== 'fight' && dist > 8 && !pushNow && !(p.hp < 30 && me.hp > 60) && Math.random() < caution) {
+      // Vorsicht: anfangs fast immer Deckung + rauslehnen; später seltener. Gegen Stürmer bewusst aus der Deckung.
+      let caution = 1 - m.cap * 0.75 + (m.aggression > 0.35 && m.cap > 0.3 ? 0.25 : 0);
+      if (plan === 'bait') caution += 0.35;
+      if (plan === 'rushClose') caution = 0.1;
+      if (prev !== 'fight' && dist > 8 && !(p.hp < 30 && me.hp > 60) && Math.random() < caution) {
         const cp = this.findCover(6);
         if (cp) { this.coverPoint = cp; this.coverLow = cp.low; this.holdPhase = 'hide'; this.holdT = rnd(0.4, 0.9); this.setState('hold'); return; }
       }
       this.setState('fight'); return;
     }
-    // Hinterhalt gegen Stürmer
-    if (prev === 'fight' && this.model.aggression > 0.3 && Math.random() < 0.5 && t - this.lastSeenTime < 1) { this.setState('ambush'); return; }
-    if (this.state === 'ambush' && this.stateT < 3.5) return;
+    // ---------- Nicht in Sicht: Plan ausführen ----------
+    if (this.state === 'flank') {
+      const there = this.flankPt && Math.hypot(this.flankPt.x - me.pos.x, this.flankPt.z - me.pos.z) < 2;
+      if (!there && this.stateT < 9 && this.flankPt) return;
+      this.setState('hunt'); return;
+    }
+    if (this.state === 'high') {
+      const there = this.highPt && Math.hypot(this.highPt.x - me.pos.x, this.highPt.z - me.pos.z) < 1.2;
+      if (there) { this.ambushLook = this.huntTarget(); this.setState('ambush'); this.ambushMax = 6; return; }
+      if (this.stateT < 10 && this.highPt) return;
+    }
+    if (plan === 'flank' && prev !== 'flank' && (this.lastSeen || this.heard)) {
+      this.flankPt = this.findFlank(this.lastSeen || this.heard.pos);
+      if (this.flankPt) { this.setState('flank'); return; }
+    }
+    if (plan === 'high' && prev !== 'high' && prev !== 'ambush' && !this.highPt) {
+      this.highPt = this.findHigh();
+      if (this.highPt) { this.setState('high'); return; }
+    }
+    // Hinterhalt: gegen Stürmer (Plan "bait") gezielt, sonst manchmal nach einem Gefecht
+    if (prev === 'fight' && (plan === 'bait' || (m.aggression > 0.3 && Math.random() < 0.5)) && t - this.lastSeenTime < 1.2) {
+      this.ambushLook = this.lastSeen; this.ambushMax = plan === 'bait' ? 5.5 : 3.5; this.setState('ambush'); return;
+    }
+    if (plan === 'bait' && prev === 'hunt' && this.stateT > 2 && Math.random() < 0.08 * (1 + tac)) {
+      const cp = this.findCover(5);
+      if (cp) { this.ambushLook = this.huntTarget(); this.ambushMax = 5; this.setState('ambush'); return; }
+    }
+    if (this.state === 'ambush' && this.stateT < (this.ambushMax || 3.5)) return;
     this.setState('hunt');
+  }
+  // Seitlicher Anmarschpunkt (neben Mangos Position, von dort aus nicht direkt sichtbar)
+  findFlank(P) {
+    const g = this.game, me = g.bot, nav = g.arena.nav, world = g.arena.world;
+    const dx = me.pos.x - P.x, dz = me.pos.z - P.z, l = Math.hypot(dx, dz) || 1, fx = dx / l, fz = dz / l;
+    let best = null;
+    for (const s of [1, -1]) for (const [side, back] of [[8, 2], [7, -3], [10, 4], [6, -5]]) {
+      const x = P.x - fz * s * side + fx * back, z = P.z + fx * s * side + fz * back;
+      if (Math.abs(x) > 16 || Math.abs(z) > 27) continue;
+      const [ci, cj] = nav.toCell(x, z), k = cj * nav.w + ci;
+      if (nav.blocked[k] || nav.height[k] > 0.3) continue;
+      if (world.lineOfSight({ x: P.x, y: 1.7, z: P.z }, { x, y: 1.6, z })) continue;
+      const d = Math.hypot(x - me.pos.x, z - me.pos.z) + Math.random() * 3;
+      if (!best || d < best.d) best = { x, z, d };
+    }
+    return best;
+  }
+  // Hoher Platz (Plattform, Dach) in Copycats Hälfte nahe der Mitte
+  findHigh() {
+    const nav = this.game.arena.nav, me = this.game.bot;
+    let best = null;
+    for (let i = 0; i < 400; i++) {
+      const x = rnd(-15, 15), z = rnd(2, 22);
+      const [ci, cj] = nav.toCell(x, z), k = cj * nav.w + ci;
+      if (nav.blocked[k] || nav.height[k] < 1.2) continue;
+      const sc = nav.height[k] - Math.abs(z - 8) * 0.08 - Math.hypot(x - me.pos.x, z - me.pos.z) * 0.03;
+      if (!best || sc > best.s) best = { x, z, s: sc };
+    }
+    return best;
   }
   setState(s) { if (this.state !== s) { this.state = s; this.stateT = 0; this.path = null; } }
 

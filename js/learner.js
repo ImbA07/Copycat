@@ -25,9 +25,18 @@ export class PlayerModel {
     this.roundsObserved = 0;
     this.barrelTrick = 0; // wie oft Mango ein Fass gegen Copycat benutzt hat
     this.cap = 0.08;      // wie viel vom Gelernten Copycat schon NUTZEN darf (steigt pro Runde, nie 100 %)
+    this.tac = 0;         // taktisches Können: Konter-Pläne, Schwächen ausnutzen, kluge Heil-Entscheidungen (steigt bis Runde 50)
+    this.late = 0;        // Feinschliff ab Runde 15 (etwas schnellere Reaktion, ruhigeres Zielen)
+    this.plan = 'standard';
   }
-  // Runde 1: ~8 %, Runde 8: ~45 %, ab Runde 15: 85 % (Maximum)
-  setRound(round) { this.cap = Math.min(0.85, 0.08 + 0.77 * Math.pow(Math.max(0, round - 1) / 14, 1.1)); }
+  // Wissen nutzen: Runde 1 ~8 %, Runde 8 ~45 %, Runde 15 85 %, danach langsam bis 93 % (Runde 50) – nie 100 %
+  // Taktik: wächst gleichmäßig bis Runde 50 (Runde 10 ~ 20 %, Runde 25 ~ 50 %, Runde 50 = 100 %)
+  setRound(round) {
+    const r = Math.max(1, round);
+    this.cap = r <= 15 ? 0.08 + 0.77 * Math.pow((r - 1) / 14, 1.1) : Math.min(0.93, 0.85 + 0.08 * (r - 15) / 35);
+    this.tac = Math.min(1, Math.pow((r - 1) / 49, 0.9));
+    this.late = Math.min(1, Math.max(0, (r - 15) / 35));
+  }
   get skill() { return Math.min(this.confidence, this.cap); }
 
   // Blickrichtung von Mango zu Copycat -> Mangos rechts/links
@@ -230,6 +239,9 @@ export class PlayerModel {
     rows.push({ label: 'Lädt nach bei', text: ra !== null ? `~${Math.round(ra)} Schuss im Magazin` : 'noch keine Daten' });
     rows.push({ label: 'Tricks pro Minute', text: `Sprünge ${this.perMin('jump').toFixed(1).replace('.', ',')} · Rutschen ${this.perMin('slide').toFixed(1).replace('.', ',')} · Dash ${this.perMin('dash').toFixed(1).replace('.', ',')}` });
     rows.push({ label: 'Hohe Positionen', text: this.playTime > 5 ? `${pct(this.highTime / this.playTime)} % der Zeit oben` : '–' });
+    const PLAN = { standard: 'noch keinen besonderen Plan', bait: 'lauert dir auf, weil du immer stürmst', flank: 'kommt von der Seite, weil du campst', rushClose: 'geht nah ran – da triffst du schlecht', keepFar: 'bleibt auf Abstand – da triffst du schlecht', high: 'besetzt die hohen Plätze vor dir' };
+    rows.push({ label: 'Copycats Plan gegen dich', text: PLAN[this.plan] || PLAN.standard });
+    rows.push({ label: 'Taktik-Level', bars: [['Taktik', this.tac, '#ff8a1f'], ['', 1 - this.tac, '#eeeeee']] });
     rows.push({ label: 'Fass-Trick', text: this.barrelTrick ? `abgeschaut! (${this.barrelTrick}× von dir gesehen)` : 'noch nicht gesehen' });
     rows.push({ label: 'Flagge', text: this.flagRounds ? `stürmt hin in ${pct(this.flagRushRate)} % der Fälle` : 'noch nie gesehen' });
     return rows;

@@ -1,4 +1,90 @@
 // Kollisionswelt: Kisten/Rampen als einfache Formen, Strahlen (Schüsse, Sichtlinien) und ein Höhen-Raster für die Wegfindung.
+// Laufen nutzt einfache Boxen. Schüsse und Sichtlinien prüfen bei Deko-Objekten (precise) zusätzlich die echte Form,
+// damit Kugeln durch Lücken (Zaun, Bank, um Rundungen) fliegen – man trifft genau das, was man sieht.
+import { Vector3 } from 'three';
+
+// Dreiecke eines Objekts (Weltkoordinaten) in einem groben Raster -> schnelle, genaue Strahltests (beide Seiten zählen)
+const CELL = 0.6;
+export class TriGrid {
+  constructor(obj) {
+    obj.updateMatrixWorld(true);
+    const tris = [], v = new Vector3();
+    obj.traverse(m => {
+      if (!m.isMesh || m.visible === false) return;
+      const pos = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : pos.count;
+      const at = i => { v.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(m.matrixWorld); return [v.x, v.y, v.z]; };
+      for (let i = 0; i + 2 < n; i += 3) tris.push(...at(i), ...at(i + 1), ...at(i + 2));
+    });
+    const T = this.t = new Float32Array(tris), nt = T.length / 9;
+    let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+    for (let i = 0; i < T.length; i += 3) { mnx = Math.min(mnx, T[i]); mny = Math.min(mny, T[i + 1]); mnz = Math.min(mnz, T[i + 2]); mxx = Math.max(mxx, T[i]); mxy = Math.max(mxy, T[i + 1]); mxz = Math.max(mxz, T[i + 2]); }
+    const e = 1e-3;
+    this.min = [mnx - e, mny - e, mnz - e]; this.max = [mxx + e, mxy + e, mxz + e];
+    this.n = [0, 1, 2].map(k => Math.max(1, Math.ceil((this.max[k] - this.min[k]) / CELL)));
+    this.cells = new Array(this.n[0] * this.n[1] * this.n[2]);
+    const ci = (k, x) => Math.min(this.n[k] - 1, Math.max(0, Math.floor((x - this.min[k]) / CELL)));
+    for (let t = 0; t < nt; t++) {
+      const o = t * 9;
+      const lo = [0, 1, 2].map(k => ci(k, Math.min(T[o + k], T[o + 3 + k], T[o + 6 + k])));
+      const hi = [0, 1, 2].map(k => ci(k, Math.max(T[o + k], T[o + 3 + k], T[o + 6 + k])));
+      for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+        const id = (x * this.n[1] + y) * this.n[2] + z; (this.cells[id] || (this.cells[id] = [])).push(t);
+      }
+    }
+    this.stamp = new Uint32Array(nt); this.q = 0;
+  }
+  // Nächster Treffer zwischen tMin und tMax: {t, normal} oder null. any=true: erster gefundener reicht.
+  hit(o, d, tMin, tMax, any = false) {
+    const O = [o.x, o.y, o.z], D = [d.x, d.y, d.z];
+    let t0 = tMin, t1 = tMax;
+    for (let k = 0; k < 3; k++) {
+      if (Math.abs(D[k]) < 1e-12) { if (O[k] < this.min[k] || O[k] > this.max[k]) return null; continue; }
+      let a = (this.min[k] - O[k]) / D[k], b = (this.max[k] - O[k]) / D[k]; if (a > b) { const tmp = a; a = b; b = tmp; }
+      if (a > t0) t0 = a; if (b < t1) t1 = b; if (t0 > t1) return null;
+    }
+    const q = ++this.q, T = this.t;
+    const cell = [0, 1, 2].map(k => Math.min(this.n[k] - 1, Math.max(0, Math.floor((O[k] + D[k] * t0 - this.min[k]) / CELL))));
+    const step = D.map(x => x > 0 ? 1 : x < 0 ? -1 : 0);
+    const tMax3 = [0, 1, 2].map(k => D[k] === 0 ? Infinity : (this.min[k] + (cell[k] + (D[k] > 0 ? 1 : 0)) * CELL - O[k]) / D[k]);
+    const tDel = D.map(x => x === 0 ? Infinity : CELL / Math.abs(x));
+    let best = t1 + 1e-6, bn = -1;
+    for (let guard = 0; guard < 4096; guard++) {
+      const list = this.cells[(cell[0] * this.n[1] + cell[1]) * this.n[2] + cell[2]];
+      if (list) for (const ti of list) {
+        if (this.stamp[ti] === q) continue; this.stamp[ti] = q;
+        const i = ti * 9;
+        const e1x = T[i + 3] - T[i], e1y = T[i + 4] - T[i + 1], e1z = T[i + 5] - T[i + 2];
+        const e2x = T[i + 6] - T[i], e2y = T[i + 7] - T[i + 1], e2z = T[i + 8] - T[i + 2];
+        const px = D[1] * e2z - D[2] * e2y, py = D[2] * e2x - D[0] * e2z, pz = D[0] * e2y - D[1] * e2x;
+        const det = e1x * px + e1y * py + e1z * pz; if (Math.abs(det) < 1e-12) continue;
+        const inv = 1 / det, sx = O[0] - T[i], sy = O[1] - T[i + 1], sz = O[2] - T[i + 2];
+        const u = (sx * px + sy * py + sz * pz) * inv; if (u < 0 || u > 1) continue;
+        const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+        const w = (D[0] * qx + D[1] * qy + D[2] * qz) * inv; if (w < 0 || u + w > 1) continue;
+        const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+        if (t >= tMin && t < best) { best = t; bn = ti; if (any) return { t }; }
+      }
+      // nächste Zelle; abbrechen, wenn der beste Treffer schon vor dieser Zelle liegt
+      const k = tMax3[0] < tMax3[1] ? (tMax3[0] < tMax3[2] ? 0 : 2) : (tMax3[1] < tMax3[2] ? 1 : 2);
+      if (bn >= 0 && best <= tMax3[k]) break;
+      if (tMax3[k] > t1) break;
+      cell[k] += step[k]; if (cell[k] < 0 || cell[k] >= this.n[k]) break;
+      tMax3[k] += tDel[k];
+    }
+    if (bn < 0) return null;
+    const i = bn * 9;
+    const e1x = T[i + 3] - T[i], e1y = T[i + 4] - T[i + 1], e1z = T[i + 5] - T[i + 2], e2x = T[i + 6] - T[i], e2y = T[i + 7] - T[i + 1], e2z = T[i + 8] - T[i + 2];
+    let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    if (nx * D[0] + ny * D[1] + nz * D[2] > 0) { nx = -nx; ny = -ny; nz = -nz; }
+    return { t: best, normal: { x: nx, y: ny, z: nz } };
+  }
+}
+function preciseHit(c, o, d, t0, maxT, any = false) {
+  const g = c.grid || (c.grid = c.mesh.userData.triGrid || (c.mesh.userData.triGrid = new TriGrid(c.mesh)));
+  return g.hit(o, d, Math.max(0, t0 - 0.05), maxT, any);
+}
 
 export class World {
   constructor(bounds) {
@@ -72,7 +158,8 @@ export class World {
     let best = null, bestT = maxT;
     for (const c of this.colliders) {
       if (!c.alive || c === ignore || c.noRay) continue;
-      const h = rayCollider(o, d, c, bestT);
+      let h = rayCollider(o, d, c, bestT);
+      if (h && this.precise && c.precise && c.mesh) h = preciseHit(c, o, d, h.t, bestT);
       if (h && h.t < bestT) { bestT = h.t; best = h; best.collider = c; }
     }
     // Boden
@@ -87,8 +174,20 @@ export class World {
     const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
     const len = Math.hypot(dx, dy, dz);
     if (len < 1e-4) return true;
-    const h = this.raycast(a, { x: dx / len, y: dy / len, z: dz / len }, len - 0.05);
-    return !h;
+    const d = { x: dx / len, y: dy / len, z: dz / len }, maxT = len - 0.05;
+    if (!this.precise) return !this.raycast(a, d, maxT);
+    if (dy < 0 && -a.y / d.y < maxT) return false; // Boden
+    // Erst die einfachen Boxen (billig), dann die genauen Formen – jeder Treffer reicht
+    const cand = [];
+    for (const c of this.colliders) {
+      if (!c.alive || c.noRay) continue;
+      const h = rayCollider(a, d, c, maxT);
+      if (!h) continue;
+      if (!(c.precise && c.mesh)) return false;
+      cand.push(c, h.t);
+    }
+    for (let i = 0; i < cand.length; i += 2) if (preciseHit(cand[i], a, d, cand[i + 1], maxT, true)) return false;
+    return true;
   }
 }
 

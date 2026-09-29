@@ -1,30 +1,31 @@
-// Figuren: Profi-Modelle (Quaternius, CC0) + eigene Animationsschicht.
-// Fertige Animationen (Stehen, Gehen, Jubeln, Umfallen) werden abgespielt; Zielen, Nachladen, Spritze, Ducken,
-// Rutschen und Springen werden am Skelett berechnet (Hände/Füße greifen per "IK" genau an die richtige Stelle).
+// Figuren: Profi-Modelle (Quaternius, CC0) + Profi-Bewegungen (Universal Animation Library, CC0) + eigene Schicht.
+// Laufen/Joggen/Sprinten/Ducken/Springen/Rutschen/Umfallen/Tanzen kommen aus echten Animationen (auf das Skelett
+// umgerechnet, Füße bleiben beim Laufen am Boden). Seitwärts/rückwärts: Schrittrichtung wird gedreht, Oberkörper
+// bleibt zum Ziel. Zielen, Nachladen und Spritze werden am Skelett berechnet (Hände greifen per "IK" an die Waffe).
 import * as THREE from 'three';
 import { toon, glow, box, rbox, sphere, cyl, cone, LAYER_FX } from './toon.js';
 import { charGltf, cloneSkinned, prop } from './assets.js';
+import { aimBone, retarget, Blend, sample, QB, LAYOUT, STRIDE } from './anim.js';
 
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z), Q = () => new THREE.Quaternion();
-const _a = V(), _b = V(), _c = V(), _q1 = Q(), _q2 = Q(), _q3 = Q();
 const smooth = t => t * t * (3 - 2 * t);
 const seg = (t, a, b) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+// Weiche Bahn durch Schlüsselpunkte [[zeit, punkt], ...] (Catmull-Rom) – die Hand fließt ohne Stopps durch alle Punkte
+function pathAt(keys, t) {
+  let i = 0; while (i < keys.length - 2 && t > keys[i + 1][0]) i++;
+  const [t0, p1] = keys[i], [t1, p2] = keys[i + 1];
+  const p0 = keys[Math.max(0, i - 1)][1], p3 = keys[Math.min(keys.length - 1, i + 2)][1];
+  const u = Math.min(1, Math.max(0, (t - t0) / Math.max(1e-4, t1 - t0))), u2 = u * u, u3 = u2 * u;
+  return new THREE.Vector3(
+    0.5 * (2 * p1.x + (-p0.x + p2.x) * u + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * u2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * u3),
+    0.5 * (2 * p1.y + (-p0.y + p2.y) * u + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * u2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * u3),
+    0.5 * (2 * p1.z + (-p0.z + p2.z) * u + (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * u2 + (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * u3));
+}
+const bump = (t, a, b) => { const x = seg(t, a, b); return Math.sin(x * Math.PI); };
 
 // ---------- IK-Helfer ----------
-function aimBone(bone, childWorld, targetWorld) {
-  bone.getWorldPosition(_a);
-  _b.copy(childWorld).sub(_a);
-  _c.copy(targetWorld).sub(_a);
-  if (_b.lengthSq() < 1e-10 || _c.lengthSq() < 1e-10) return;
-  _b.normalize(); _c.normalize();
-  _q1.setFromUnitVectors(_b, _c);
-  bone.getWorldQuaternion(_q2);
-  _q1.multiply(_q2);
-  bone.parent.getWorldQuaternion(_q3).invert();
-  bone.quaternion.copy(_q3.multiply(_q1));
-  bone.updateMatrixWorld(true);
-}
 const _A = V(), _B = V(), _C = V(), _T = V(), _P = V(), _E = V(), _dir = V();
+const _q1 = Q(), _q2 = Q(), _q3 = Q(), _qI = Q(), _yAxis = V(0, 1, 0);
 function twoBoneIK(upper, lower, end, target, pole) {
   upper.getWorldPosition(_A); lower.getWorldPosition(_B); end.getWorldPosition(_C);
   const la = _A.distanceTo(_B), lb = _B.distanceTo(_C);
@@ -160,11 +161,9 @@ export class Rig {
     // Animationen
     this.mixer = new THREE.AnimationMixer(this.model);
     const clip = n => gltf.animations.find(a => a.name.endsWith('|' + n));
-    this.actions = {};
-    for (const n of ['Idle', 'Walk', 'Victory', 'Defeat']) { const a = this.mixer.clipAction(clip(n)); a.play(); a.setEffectiveWeight(0); this.actions[n] = a; }
-    this.actions.Defeat.setLoop(THREE.LoopOnce); this.actions.Defeat.clampWhenFinished = true;
-    this.weights = { Idle: 1, Walk: 0, Victory: 0, Defeat: 0 };
-    this.actions.Idle.setEffectiveWeight(1);
+    this.victory = this.mixer.clipAction(clip('Victory')); this.victory.play();
+    this.mot = retarget(gltf, cloneSkinned); this.blend = new Blend();
+    this.lw = { idle: 1 }; this.phase = 0; this.deadT = 0; this.landT = 9; this.landW = 0; this.hitT = 9; this.moveDir = 1;
     // Waffe (Drehpunkt an der Schulter, neigt sich mit dem Blick)
     this.gunPivot = new THREE.Group(); this.root.add(this.gunPivot);
     this.gun = new THREE.Group(); this.gunPivot.add(this.gun);
@@ -204,7 +203,7 @@ export class Rig {
   }
 
   // Nach dem Landen kurz zusammenstauchen
-  land(strength) { this.squash = Math.min(1, Math.max(this.squash, strength)); }
+  land(strength) { this.squash = Math.min(1, Math.max(this.squash, strength)); if (strength > 0.25) { this.landT = 0; this.landW = Math.min(1, strength * 1.2); } }
 
   hitboxes(pos) {
     this.root.updateMatrixWorld(true);
@@ -215,13 +214,8 @@ export class Rig {
     };
   }
   eyeHeight(crouchAmt) { return this.standEye * (1 - 0.34 * crouchAmt); }
-  flash() { this.hitFlash = 0.12; this.hitReact = 1; }
+  flash() { this.hitFlash = 0.12; this.hitReact = 1; this.hitT = 0; }
   local(x, y, z) { return V(x, y, z).applyMatrix4(this.root.matrixWorld); }
-
-  setWeights(target, dt, speed = 10) {
-    const k = Math.min(1, dt * speed);
-    for (const n in this.weights) { this.weights[n] += ((target[n] || 0) - this.weights[n]) * k; this.actions[n].setEffectiveWeight(this.weights[n]); }
-  }
 
   // st: {speed, fwd, side, grounded, crouch, slide, pitch, reload, syringe, taunt, dead, sprint}
   animate(st, dt) {
@@ -230,53 +224,120 @@ export class Rig {
     const B = this.bones, s = this.s, K = this.k, H = this.spec.height;
     const dead = st.dead > 0, taunt = st.taunt;
     const fullBody = dead || (taunt && (taunt.type === 'dance' || taunt.type === 'flail'));
-    // ----- 1) Grundanimation -----
+    // ----- 1) Grundbewegung aus den Profi-Animationen -----
     for (const [b, p, q] of this.rest) { b.position.copy(p); b.quaternion.copy(q); }
-    const moving = st.speed > 0.4 && st.grounded && !st.slide;
-    const w = { Idle: 1 };
-    if (dead) { w.Idle = 0; w.Defeat = 1; }
-    else if (fullBody) { w.Idle = 0; w.Victory = 1; }
-    else if (moving) { w.Idle = 0; w.Walk = 1; }
-    if (dead && !this._deadStarted) { this.actions.Defeat.reset().play(); this._deadStarted = true; }
-    if (!dead) this._deadStarted = false;
-    this.setWeights(w, dt, dead ? 20 : 10);
-    let targetLegYaw = 0, dir = 1;
+    const M = this.mot, sp = st.speed || 0;
+    const moving = sp > 0.35 && st.grounded && !st.slide;
+    // Laufrichtung relativ zum Blick: vorwärts / seitwärts / rückwärts
+    let theta = 0, mdir = 1;
     if (moving) {
       const ang = Math.atan2(-st.side, st.fwd); // + = nach links
-      if (Math.abs(ang) <= 1.95) targetLegYaw = Math.max(-1.15, Math.min(1.15, ang));
-      else { dir = -1; targetLegYaw = Math.max(-1.15, Math.min(1.15, ang - Math.sign(ang) * Math.PI)); }
+      if (Math.abs(ang) <= 1.75) theta = ang; else { mdir = -1; theta = ang - Math.sign(ang) * Math.PI; }
     }
-    this.legYaw += (targetLegYaw - this.legYaw) * Math.min(1, dt * 12);
-    this.actions.Walk.timeScale = dir * Math.max(0.8, Math.min(2.8, st.speed / 2.3));
-    this.actions.Victory.timeScale = taunt?.type === 'flail' ? 1.8 : 1.15;
-    this.mixer.update(dt);
+    this.moveDir = mdir;
+    let dy = theta - this.legYaw; if (Math.abs(dy) > 1.6) this.legYaw = theta; else this.legYaw += dy * Math.min(1, dt * 14);
+    // Zielgewichte
+    const c = Math.min(1, st.crouch || 0), air = !st.grounded && !st.slide && !dead;
+    const tw = {};
+    if (dead) tw.death = 1;
+    else if (taunt?.type === 'dance') tw.dance = 1;
+    else if (st.slide) tw.slide = 1;
+    else if (air) tw.air = 1;
+    else if (moving) {
+      const sprintK = st.sprint ? Math.min(1, Math.max(0, (sp - 5.8) / 1.6)) : 0;
+      const walkK = Math.min(1, Math.max(0, 1 - (sp - 1.6) / 2.2));
+      tw.walk = walkK * (1 - c); tw.jog = (1 - walkK) * (1 - sprintK) * (1 - c); tw.sprint = (1 - walkK) * sprintK * (1 - c); tw.crouchWalk = c;
+    } else { tw.idle = 1 - c; tw.crouchIdle = c; }
+    const rate = dead ? 14 : air ? 9 : st.slide ? 16 : 11, kk = Math.min(1, dt * rate);
+    for (const n of new Set([...Object.keys(this.lw), ...Object.keys(tw)])) { this.lw[n] = (this.lw[n] || 0) + ((tw[n] || 0) - (this.lw[n] || 0)) * kk; if (this.lw[n] < 1e-3 && !tw[n]) delete this.lw[n]; }
+    // Schritt-Takt: Füße gleiten genau so schnell nach hinten, wie die Figur läuft (kein Rutschen)
+    const GAIT = ['walk', 'jog', 'sprint', 'crouchWalk'];
+    let gw = 0, dist = 0;
+    for (const n of GAIT) if (this.lw[n]) { gw += this.lw[n]; dist += this.lw[n] * Math.max(0.3, M[n].speed * this.s) * M[n].dur; }
+    if (gw > 0 && moving) this.phase = (this.phase + mdir * dt * sp / (dist / gw) + 10) % 1;
+    this.deadT = dead ? this.deadT + dt : 0;
+    this.landT += dt; this.hitT += dt;
+    const Bl = this.blend; Bl.clear();
+    for (const [n, w] of Object.entries(this.lw)) {
+      const clip = M[n];
+      let t;
+      if (GAIT.includes(n)) t = ((this.phase + clip.phase0) % 1) * clip.dur;
+      else if (n === 'death') t = this.deadT;
+      else if (n === 'air') t = 0.25 + (this.t % 1.0) * 0.5;
+      else t = this.t;
+      Bl.add(clip, t, w);
+    }
+    // Landen: kurz in die Knie
+    const lk = this.landT < 0.42 && !air && !dead ? this.landW * Math.sin(Math.PI * this.landT / 0.42) * (moving ? 0.45 : 0.9) : 0;
+    if (lk > 0.01) Bl.add(M.land, 0.12 + this.landT * 0.6, lk * Bl.w / Math.max(0.05, 1 - lk));
+    const R = Bl.result();
+    // Anwenden
+    QB.forEach((n, i) => B[n].quaternion.fromArray(R, i * 4));
+    const rest = M._rest;
+    const cs = Math.cos(this.legYaw), sn = Math.sin(this.legYaw);
+    const rot = (x, z, rx, rz, k = 1) => { const dx = x - rx, dz = z - rz; return [rx + (dx * cs + dz * sn) * k, rz + (-dx * sn + dz * cs) * k]; };
+    {
+      const [bx, bz] = rot(R[LAYOUT.O_BODY], R[LAYOUT.O_BODY + 2], rest.body.x, rest.body.z);
+      B.Body.position.set(bx, R[LAYOUT.O_BODY + 1], bz);
+    }
+    const yawQ = _q1.setFromAxisAngle(_yAxis, this.legYaw * 0.7);
+    ['L', 'R'].forEach((side, i) => {
+      const o = LAYOUT.O_FOOT + i * 7, rf = side === 'L' ? rest.footL : rest.footR;
+      const lat = 1 - 0.25 * Math.abs(sn); // seitlich etwas kürzere Schritte
+      let [fx, fz] = rot(R[o], R[o + 2], rf.x, rf.z, lat);
+      // Beim Seitwärtslaufen nicht über Kreuz treten
+      if (side === 'L') fx = Math.max(fx, rf.x * 0.45); else fx = Math.min(fx, rf.x * 0.45);
+      B['Foot' + side].position.set(fx, R[o + 1], fz);
+      B['Foot' + side].quaternion.fromArray(R, o + 3).premultiply(yawQ);
+      const po = LAYOUT.O_POLE + i * 3;
+      const [px, pz] = rot(R[po], R[po + 2], rf.x, rf.z);
+      B['PoleTarget' + side].position.set(px * 0.5 + R[po] * 0.5, R[po + 1], pz * 0.5 + R[po + 2] * 0.5);
+    });
+    // Treffer: kurzer Ruck im Oberkörper (aus der Treffer-Animation, draufaddiert)
+    if (this.hitT < M.hit.dur && !dead) {
+      const hk = 1 - this.hitT / M.hit.dur;
+      const h0 = this._h0 || (this._h0 = new Float32Array(M.hit.data.subarray(0, 20)));
+      const cur = sample(M.hit, this.hitT, this._ht || (this._ht = new Float32Array(STRIDE)));
+      for (let i = 0; i < 5; i++) {
+        _q2.fromArray(h0, i * 4).invert().premultiply(_q3.fromArray(cur, i * 4)); // h_t * inv(h0) (lokal genug für den kleinen Ruck)
+        _q2.slerp(_qI, 1 - hk * 1.4 > 0 ? 1 - hk * 1.4 : 0);
+        B[QB[i]].quaternion.multiply(_q2);
+      }
+    }
+    if (taunt?.type === 'flail') {
+      // alte Jubel-Animation der Figur (Arme wedeln)
+      for (const [b, p, q] of this.rest) { b.position.copy(p); b.quaternion.copy(q); }
+      this.victory.timeScale = 1.8; this.mixer.update(dt);
+    }
 
-    // ----- 2) Körperhaltung -----
-    const crouch = st.slide ? 1 : st.crouch;
-    const drop = (st.slide ? 0.46 : 0.33) * crouch * H;
-    B.Body.position.y -= drop * K;
+    // ----- 2) Körperhaltung (Blick, Lehnen, Hüfte dreht mit den Beinen) -----
+    const crouch = st.slide ? 1 : c;
     if (taunt?.type === 'crouchspam') B.Body.position.y -= ((Math.sin(taunt.t * 14) + 1) / 2) * 0.33 * H * K;
+    // Beschleunigung spüren: nach vorn/zur Seite lehnen
+    const vf = (st.fwd || 0) * sp, vs = (st.side || 0) * sp;
+    const af = this._pvf === undefined ? 0 : (vf - this._pvf) / Math.max(dt, 1e-3), as = this._pvs === undefined ? 0 : (vs - this._pvs) / Math.max(dt, 1e-3);
+    this._pvf = vf; this._pvs = vs;
+    this.accLean = this.accLean || { f: 0, s: 0 };
+    this.accLean.f += (Math.max(-1, Math.min(1, af / 40)) - this.accLean.f) * Math.min(1, dt * 8);
+    this.accLean.s += (Math.max(-1, Math.min(1, as / 40)) - this.accLean.s) * Math.min(1, dt * 8);
     if (!fullBody) {
-      B.Body.rotateY(this.legYaw);
-      const lean = st.slide ? -0.5 : (st.sprint ? 0.22 : 0.05) * Math.min(1, st.speed / 6);
-      B.Abdomen.rotateY(-this.legYaw * 0.55);
-      B.Torso.rotateY(-this.legYaw * 0.45);
-      B.Abdomen.rotateX(lean + crouch * 0.28 - this.hitReact * 0.3);
+      B.Body.rotateY(this.legYaw * 0.4);
+      B.Abdomen.rotateY(-this.legYaw * 0.25);
+      B.Torso.rotateY(-this.legYaw * 0.15);
+      // Laufzyklen beugen den Oberkörper stark vor – im Kampf etwas aufrechter, rückwärts leicht zurück
+      let gaitW = 0; for (const n of GAIT) gaitW += this.lw[n] || 0;
+      const lean = st.slide ? -0.2 : (st.sprint ? 0.1 : -0.16) * Math.min(1, gaitW) - (mdir < 0 ? 0.12 : 0) * gaitW + this.accLean.f * 0.18;
+      B.Abdomen.rotateX(lean - this.hitReact * 0.25);
+      B.Abdomen.rotateZ(this.accLean.s * 0.14);
       B.Torso.rotateX(-st.pitch * 0.3);
       B.Neck.rotateX(-st.pitch * 0.4 + (st.slide ? 0.3 : 0));
     }
     this.hitReact = Math.min(1, Math.max(0, this.hitReact - dt * 6));
-    // Füße: in der Luft anziehen, beim Rutschen ein Bein nach vorn
-    if (!fullBody) {
-      if (!st.grounded && !st.slide) { for (const f of [B.FootL, B.FootR]) { f.position.y += 0.3 * H * K * 0.5; f.position.z += 0.08 * K; } B.FootL.position.z += 0.12 * K; }
-      if (st.slide) { B.FootL.position.z += 0.5 * K; B.FootR.position.z -= 0.1 * K; B.FootR.position.y += 0.05 * K; }
-    }
     this.model.updateMatrixWorld(true);
     // ----- 3) Beine (IK zu den Füßen) -----
-    if (!dead) for (const side of ['L', 'R']) {
+    for (const side of ['L', 'R']) {
       const tgt = B['Foot' + side].getWorldPosition(V());
       const pole = B['PoleTarget' + side].getWorldPosition(V());
-      if (st.slide) pole.y += 0.4;
       twoBoneIK(B['UpperLeg' + side], B['LowerLeg' + side], B['LowerLeg' + side + '_end'] || B['LowerLeg' + side], tgt, pole);
     }
 
@@ -297,53 +358,57 @@ export class Rig {
     if (this.mag) this.mag.visible = true;
     this.gun.updateMatrixWorld(true);
     const inGun = p => p.clone().applyMatrix4(this.gun.matrixWorld);
-    // Nachladen: Magazin raus (fällt), neues vom Gürtel, rein, Spannhebel ziehen
+    // Nachladen: Waffe kippen, Magazin raus (fällt), neues vom Gürtel, reinklatschen, Spannhebel ziehen – alles in einem Fluss
     if (st.reload >= 0 && !dead) {
       const t = st.reload;
-      const tilt = smooth(seg(t, 0, 0.12)) * (1 - smooth(seg(t, 0.86, 1)));
-      this.gun.rotation.z = tilt * 0.65; this.gun.rotation.x -= tilt * 0.3; this.gun.position.y -= tilt * 0.05; this.gun.position.x += tilt * 0.04;
+      const tilt = smooth(seg(t, 0, 0.14)) * (1 - smooth(seg(t, 0.84, 1)));
+      const slap = bump(t, 0.62, 0.7), pull = bump(t, 0.77, 0.86);
+      this.gun.rotation.z = tilt * 0.7 - slap * 0.12; this.gun.rotation.x -= tilt * 0.32 - pull * 0.08;
+      this.gun.position.y -= tilt * 0.06 - slap * 0.035; this.gun.position.x += tilt * 0.05; this.gun.position.z -= pull * 0.03;
       this.gun.updateMatrixWorld(true);
-      const magOut = t > 0.22 && t < 0.64;
+      const magOut = t > 0.2 && t < 0.63;
       if (this.mag) this.mag.visible = !magOut;
-      if (t > 0.22 && !this._magDropped) { this._magDropped = true; this.onMagDrop?.(this.mag || this.gun); }
+      if (t > 0.2 && !this._magDropped) { this._magDropped = true; this.onMagDrop?.(this.mag || this.gun); }
       const pMag = inGun(this.magPoint), pGrip = inGun(this.gripL), pCharge = inGun(this.chargePoint);
       const pBelt = this.local(0.26 * H / 2, 0.95 * s, 0.12);
-      const below = pMag.clone().add(V(0, -0.14, 0));
-      let p;
-      if (t < 0.12) p = pGrip.lerp(pMag, smooth(seg(t, 0, 0.12)));
-      else if (t < 0.24) p = pMag.lerp(below, smooth(seg(t, 0.12, 0.24)));
-      else if (t < 0.42) p = below.lerp(pBelt, smooth(seg(t, 0.24, 0.42)));
-      else if (t < 0.58) p = pBelt.lerp(below, smooth(seg(t, 0.42, 0.58)));
-      else if (t < 0.66) p = below.lerp(pMag, smooth(seg(t, 0.58, 0.66)));
-      else if (t < 0.78) p = pMag.lerp(pCharge, smooth(seg(t, 0.66, 0.78)));
-      else if (t < 0.87) p = pCharge.add(V(0, 0, -0.1 * Math.sin(seg(t, 0.78, 0.87) * Math.PI)).applyQuaternion(this.gun.getWorldQuaternion(Q())));
-      else p = pCharge.lerp(pGrip, smooth(seg(t, 0.87, 1)));
+      const below = pMag.clone().add(V(0, -0.16, 0.02)), up = pMag.clone().add(V(0, -0.06, 0));
+      const back = pCharge.clone().add(V(0, 0, -0.12).applyQuaternion(this.gun.getWorldQuaternion(Q())));
+      const p = pathAt([[0, pGrip], [0.13, pMag], [0.22, below], [0.4, pBelt], [0.52, below], [0.6, up], [0.66, pMag], [0.76, pCharge], [0.82, back], [0.88, pCharge], [1, pGrip]], t);
       leftTarget = p;
       if (t > 0.34 && t < 0.64) {
         this.spareMag.visible = true;
         this.spareMag.position.copy(p.clone().applyMatrix4(inv)).add(V(0, 0.02, 0));
         this.spareMag.rotation.set(0, 0, tilt * 0.65);
       }
+      // Kopf schaut zur Waffe/zum Gürtel, Oberkörper dreht leicht mit
+      const look = smooth(seg(t, 0.05, 0.2)) * (1 - smooth(seg(t, 0.85, 1)));
+      const belt = bump(t, 0.28, 0.58);
+      B.Neck.rotateX(look * 0.35 + belt * 0.25); B.Neck.rotateY(look * 0.18 + belt * 0.2);
+      B.Torso.rotateY(belt * 0.18); B.Abdomen.rotateZ(-belt * 0.06);
     } else this._magDropped = false;
     // Spritze: Waffe nur noch rechts, links Spritze vom Gürtel, ausholen, ins Bein rammen
     if (st.syringe >= 0 && !dead) {
       const t = st.syringe;
-      this.gun.rotation.z = -0.55; this.gun.position.y -= 0.1; this.gun.position.x -= 0.04;
+      const away = smooth(seg(t, 0, 0.12)) * (1 - smooth(seg(t, 0.88, 1)));
+      this.gun.rotation.z = -0.55 * away; this.gun.position.y -= 0.1 * away; this.gun.position.x -= 0.04 * away;
       this.gun.updateMatrixWorld(true);
       const pBelt = this.local(0.26 * H / 2, 0.92 * s, 0.12);
       const pUp = this.local(0.3 * H / 2, 2.05 * s, 0.4);
       const pThigh = this.local(0.2 * H / 2, 0.72 * s - (st.crouch ? 0.2 : 0), 0.24);
+      const pGrip = inGun(this.gripL);
       let p;
-      if (t < 0.22) p = pBelt;
-      else if (t < 0.45) p = pBelt.lerp(pUp, smooth(seg(t, 0.22, 0.45)));
-      else if (t < 0.53) p = pUp.lerp(pThigh, seg(t, 0.45, 0.53) ** 2);
-      else if (t < 0.78) p = pThigh.add(V(0, Math.sin(this.t * 55) * 0.012, 0));
-      else p = pThigh.lerp(pBelt, smooth(seg(t, 0.78, 1)));
+      if (t < 0.45) p = pathAt([[0, pGrip], [0.2, pBelt], [0.45, pUp]], t);
+      else if (t < 0.52) p = pUp.lerp(pThigh, seg(t, 0.45, 0.52) ** 2); // Zustechen: schnell
+      else if (t < 0.78) p = pThigh.add(V(0, Math.sin(this.t * 55) * 0.012 * (1 - seg(t, 0.52, 0.78)), 0));
+      else p = pathAt([[0.78, pThigh], [0.9, pBelt], [1, pGrip]], t);
       leftTarget = p;
-      this.syringe.visible = t > 0.08 && t < 0.94;
+      this.syringe.visible = t > 0.1 && t < 0.92;
       this.syringe.position.copy(p.clone().applyMatrix4(inv));
       this.syringe.rotation.set(t < 0.45 ? 0.4 : Math.PI - 0.35, 0, 0);
       this.juice.scale.y = t > 0.55 ? Math.max(0.05, 1 - seg(t, 0.55, 0.78)) : 1;
+      // Ausholen: Oberkörper zieht mit, beim Stich nach vorn beugen und hinschauen
+      const wind = bump(t, 0.25, 0.5), stab = smooth(seg(t, 0.46, 0.55)) * (1 - smooth(seg(t, 0.75, 0.95)));
+      B.Abdomen.rotateX(stab * 0.28 - wind * 0.08); B.Torso.rotateY(wind * 0.25 - stab * 0.1); B.Neck.rotateX(stab * 0.45);
     }
     // Pantomime: unsichtbare Wand abtasten
     if (taunt?.type === 'box' && !dead) {

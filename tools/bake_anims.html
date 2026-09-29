@@ -1,0 +1,33 @@
+<!doctype html><html><body><script type="importmap">{"imports":{"three":"../vendor/three.module.js"}}</script>
+<script type="module">
+// Liest die "Universal Animation Library" (Quaternius, CC0) und speichert die benötigten Bewegungen kompakt:
+// pro Bild (30 fps) Positionen aller wichtigen Knochen + Drehungen von Becken/Wirbelsäule/Kopf/Füßen (im Modellraum).
+// Aufruf über tools/bake_anims.mjs (legt ual.glb/ual2.glb vorher nach _preview/ual/).
+import * as THREE from 'three';
+import { GLTFLoader } from '../vendor/addons/loaders/GLTFLoader.js';
+const L = new GLTFLoader(); const load = u => new Promise((r, e) => L.load(u, r, undefined, e));
+const POS = ['pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'Head', 'clavicle_l', 'upperarm_l', 'lowerarm_l', 'hand_l', 'middle_01_l', 'clavicle_r', 'upperarm_r', 'lowerarm_r', 'hand_r', 'middle_01_r', 'thigh_l', 'calf_l', 'foot_l', 'ball_l', 'thigh_r', 'calf_r', 'foot_r', 'ball_r'];
+const ROT = ['pelvis', 'spine_01', 'spine_03', 'neck_01', 'Head', 'foot_l', 'foot_r', 'hand_l', 'hand_r'];
+const WANT = [
+  ['ual', 'A_TPose', 'tpose', 1], ['ual', 'Idle_Loop', 'idle'], ['ual', 'Walk_Loop', 'walk'], ['ual', 'Jog_Fwd_Loop', 'jog'], ['ual', 'Sprint_Loop', 'sprint'],
+  ['ual', 'Crouch_Idle_Loop', 'crouchIdle'], ['ual', 'Crouch_Fwd_Loop', 'crouchWalk'], ['ual', 'Jump_Loop', 'air'], ['ual', 'Jump_Land', 'land'],
+  ['ual', 'Death01', 'death'], ['ual', 'Dance_Loop', 'dance'], ['ual', 'Hit_Chest', 'hit'], ['ual2', 'Slide_Loop', 'slide'], ['ual2', 'Idle_No_Loop', 'no'],
+];
+const files = { ual: await load('../_preview/ual/ual.glb'), ual2: await load('../_preview/ual/ual2.glb') };
+const out = { fps: 30, pos: POS, rot: ROT, clips: {} };
+const v = new THREE.Vector3(), q = new THREE.Quaternion();
+for (const [file, name, key, maxFrames] of WANT) {
+  const g = files[file], sc = g.scene, clip = g.animations.find(a => a.name === name);
+  const mixer = new THREE.AnimationMixer(sc), act = mixer.clipAction(clip); act.play();
+  const n = maxFrames || Math.max(2, Math.round(clip.duration * out.fps) + 1);
+  const data = new Int16Array(n * (POS.length * 3 + ROT.length * 4)); let k = 0;
+  for (let f = 0; f < n; f++) {
+    mixer.setTime(Math.min(clip.duration, f / out.fps)); sc.updateMatrixWorld(true);
+    for (const b of POS) { sc.getObjectByName(b).getWorldPosition(v); data[k++] = Math.round(v.x * 1000); data[k++] = Math.round(v.y * 1000); data[k++] = Math.round(v.z * 1000); }
+    for (const b of ROT) { sc.getObjectByName(b).getWorldQuaternion(q); for (const c of q.toArray()) data[k++] = Math.round(c * 32767); }
+  }
+  const bytes = new Uint8Array(data.buffer); let s = ''; for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  out.clips[key] = { frames: n, dur: clip.duration, loop: !maxFrames && /Loop/.test(name), data: btoa(s) };
+}
+window.out = JSON.stringify(out); window.ready = true;
+</script></body></html>

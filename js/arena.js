@@ -365,10 +365,35 @@ function fillArena(place) {
 const DESTRUCT = { crate: 70, fence: 50, barrel: 25 };
 const dimCache = new Map();
 
-function buildWorld(items) {
-  const all = [...items, ...items.map(it => ({ ...it, x: -it.x, z: -it.z, dir: it.dir !== undefined ? -it.dir : undefined, mirror: true }))];
+// Sichtbares Objekt eines Eintrags (einmal gebaut, danach wiederverwendet – auch für genaue Schuss-Prüfung)
+function visualFor(it, theme) {
+  const src = it.src || it, key = it.mirror ? '_visM' : '_vis';
+  if (src[key]) return src[key];
+  let obj;
+  if (it.kind === 'stairs') obj = stairs(it, theme);
+  else if (it.kind === 'step') obj = stepBox(null, it.fw, it.fd, it.h, theme);
+  else if (it.kind === 'bridge') obj = bridge(it, theme);
+  else if (it.kind === 'ramp') {
+    const len = it.axis === 'x' ? it.w : it.d, width = it.axis === 'x' ? it.d : it.w;
+    obj = wedge(len, it.h, width, { vorstadt: '#c98a4b', schulhof: '#e05a5a', supermarkt: '#8a93a6', akw: '#7d8795' }[theme]);
+    if (it.axis === 'x') { if (it.dir < 0) obj.rotation.y = Math.PI; } else obj.rotation.y = it.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+  } else {
+    obj = it.make(rng(it.seed || 1), theme).obj;
+    if (it.rot) obj.rotation.y = Math.PI / 2;
+    if (it.mirror) obj.rotation.y += Math.PI;
+  }
+  if (it.kind !== 'stairs' && it.kind !== 'bridge') obj.position.set(it.x, 0, it.z);
+  obj.updateMatrixWorld(true);
+  return (src[key] = obj);
+}
+// Diese Teile sind so, wie ihre Box aussieht -> keine genaue Prüfung nötig
+const COARSE = new Set(['ramp', 'stairs', 'step', 'stack', 'bridge', 'platform']);
+function buildWorld(items, theme) {
+  const all = [...items, ...items.map(it => ({ ...it, src: it, x: -it.x, z: -it.z, dir: it.dir !== undefined ? -it.dir : undefined, mirror: true }))];
   const world = new World({ minX: -HALF_X, maxX: HALF_X, minZ: -HALF_Z, maxZ: HALF_Z });
+  world.precise = true;
   const cols = [];
+  const addC = c => { world.add(c); cols.push(c); if (!COARSE.has(c.item.kind)) { c.precise = true; Object.defineProperty(c, 'mesh', { get() { return visualFor(c.item, theme); }, configurable: true }); } };
   for (const it of all) {
     if (it.shape === 'car') {
       // Karosserie (halbe Höhe, ganze Länge) + Kabine (mittig, volle Höhe)
@@ -378,7 +403,7 @@ function buildWorld(items) {
       const cab = alongZ
         ? { type: 'box', min: { x: it.x - it.fw / 2 + 0.1, y: hb, z: it.z + c0 - cl / 2 }, max: { x: it.x + it.fw / 2 - 0.1, y: it.h, z: it.z + c0 + cl / 2 }, kind: it.kind, item: it, sub: true }
         : { type: 'box', min: { x: it.x + c0 - cl / 2, y: hb, z: it.z - it.fd / 2 + 0.1 }, max: { x: it.x + c0 + cl / 2, y: it.h, z: it.z + it.fd / 2 - 0.1 }, kind: it.kind, item: it, sub: true };
-      world.add(body); world.add(cab); cols.push(body, cab);
+      addC(body); addC(cab);
       continue;
     }
     if (it.kind === 'stack') {
@@ -386,12 +411,12 @@ function buildWorld(items) {
       const halves = alongX
         ? [[it.x - sgn * it.fw / 4, it.fw / 2, it.fd, 1.2], [it.x + sgn * it.fw / 4, it.fw / 2, it.fd, 2.4]]
         : [[it.x, it.fw, it.fd / 2, 1.2, it.z + sgn * it.fd / 4], [it.x, it.fw, it.fd / 2, 2.4, it.z - sgn * it.fd / 4]];
-      for (const [x, w, d, h, z] of halves) { const zz = z ?? it.z; const c = { type: 'box', min: { x: x - w / 2, y: 0, z: zz - d / 2 }, max: { x: x + w / 2, y: h, z: zz + d / 2 }, kind: 'stack', item: it }; world.add(c); cols.push(c); }
+      for (const [x, w, d, h, z] of halves) { const zz = z ?? it.z; const c = { type: 'box', min: { x: x - w / 2, y: 0, z: zz - d / 2 }, max: { x: x + w / 2, y: h, z: zz + d / 2 }, kind: 'stack', item: it }; addC(c); }
       continue;
     }
     if (it.kind === 'bridge') {
       const c = { type: 'box', min: { x: it.x - it.fw / 2, y: it.h - 0.2, z: it.z - it.fd / 2 }, max: { x: it.x + it.fw / 2, y: it.h, z: it.z + it.fd / 2 }, kind: 'bridge', item: it, overhead: true };
-      world.add(c); cols.push(c); continue;
+      addC(c); continue;
     }
     const c = {
       type: it.kind === 'ramp' || it.kind === 'stairs' ? 'ramp' : 'box',
@@ -401,7 +426,7 @@ function buildWorld(items) {
     if (DESTRUCT[it.kind]) { c.hp = c.maxHp = DESTRUCT[it.kind]; c.destructible = true; }
     if (it.kind === 'barrel') c.explosive = true;
     if (it.kind === 'fence') c.noStand = true;
-    world.add(c); cols.push(c);
+    addC(c);
   }
   for (const [x, z, w, d] of [[0, -HALF_Z - 0.5, HALF_X * 2 + 2, 1], [0, HALF_Z + 0.5, HALF_X * 2 + 2, 1], [-HALF_X - 0.5, 0, 1, HALF_Z * 2], [HALF_X + 0.5, 0, 1, HALF_Z * 2]])
     world.add({ type: 'box', min: { x: x - w / 2, y: 0, z: z - d / 2 }, max: { x: x + w / 2, y: 4.2, z: z + d / 2 }, kind: 'perimeter', perimeter: [x, z, w, d] });
@@ -410,30 +435,37 @@ function buildWorld(items) {
 }
 
 // Gibt eine offene Sichtlinie zwischen den Bereichen zurück, die beide Seiten in den ersten Sekunden erreichen (oder null)
-function openSightline(world, nav) {
+function* sightlineGen(world, nav) {
   const A = nav.reachable({ x: 0, z: -SPAWN_Z }, SAFE_REACH), B = nav.reachable({ x: 0, z: SPAWN_Z }, SAFE_REACH);
   const pick = (L, n) => { const out = []; const step = Math.max(1, Math.floor(L.length / n)); for (let i = 0; i < L.length; i += step) out.push(L[i]); return out; };
   const a = pick(A, 80), b = pick(B, 80);
-  for (const p of a) for (const q of b) {
-    const P = { x: p.x, y: p.y + 1.7, z: p.z }, Qp = { x: q.x, y: q.y + 1.7, z: q.z };
-    if (world.lineOfSight(P, Qp)) return [P, Qp];
+  for (const p of a) {
+    for (const q of b) {
+      const P = { x: p.x, y: p.y + 1.7, z: p.z }, Qp = { x: q.x, y: q.y + 1.7, z: q.z };
+      if (world.lineOfSight(P, Qp)) return [P, Qp];
+    }
+    yield;
   }
   return null;
 }
+// Gibt eine offene Sichtlinie zwischen den Bereichen zurück, die beide Seiten in den ersten Sekunden erreichen (oder null)
+function openSightline(world, nav) { const g = sightlineGen(world, nav); let r; do r = g.next(); while (!r.done); return r.value; }
 
 export const arenaDebug = [];
-export function buildArena(theme, seed) {
+export { openSightline, CATALOG };
+// Als Generator: gibt zwischendurch die Kontrolle ab, damit das Spiel beim Bauen nicht einfriert.
+function* genArena(theme, seed) {
   let fallback = null;
-  for (let attempt = 0; attempt < 30; attempt++) {
+  for (let attempt = 0; attempt < 40; attempt++) {
     const r = rng(seed + attempt * 7919);
     const { items, place, tryAdd, rectFor, placePlatform } = plan(r, theme);
-    let W = buildWorld(items);
+    let W = buildWorld(items, theme); yield;
     const ps = { x: 0, z: -SPAWN_Z }, bs = { x: 0, z: SPAWN_Z };
     let ok = false;
     for (let fix = 0; fix < 18; fix++) {
       if (!W.nav.connected(ps, bs) || !W.nav.connected(ps, { x: 0, z: 0 })) { arenaDebug.push('disconnected fix' + fix); break; }
       if (!fallback) fallback = { r, ...W };
-      const line = openSightline(W.world, W.nav);
+      const line = yield* sightlineGen(W.world, W.nav);
       if (!line) { ok = true; break; }
       // Hindernis auf die Sichtlinie stellen (auf Mangos Hälfte; wird für Copycat gespiegelt)
       let [P, Qp] = line; if (P.z > Qp.z) [P, Qp] = [Qp, P];
@@ -447,23 +479,24 @@ export function buildArena(theme, seed) {
         if (added) break;
       }
       if (!added) { arenaDebug.push(`noplace fix${fix} line ${P.x.toFixed(1)},${P.z.toFixed(1)} -> ${Qp.x.toFixed(1)},${Qp.z.toFixed(1)}`); break; }
-      W = buildWorld(items);
+      W = buildWorld(items, theme); yield;
     }
     if (!ok) continue;
-    // Jetzt auffüllen (zusätzliche Objekte können Sichtlinien nur blockieren, nie öffnen)
+    // Jetzt auffüllen + höhere Ebenen (hohe Plattform, Treppen, Stege). Danach prüfen, ob man von neuen Stellen zu früh sieht,
+    // und notfalls die Zusatz-Objekte an der Sichtlinie wieder entfernen.
     const base = items.length;
     fillArena(place);
-    let F = buildWorld(items);
-    if (!F.nav.connected(ps, bs) || !F.nav.connected(ps, { x: 0, z: 0 })) { items.length = base; F = buildWorld(items); }
-    // Höhere Ebenen: hohe Plattform, Treppen, Stege – danach nochmal prüfen, ob man von oben zu früh sieht
-    const base2 = items.length;
+    let F = buildWorld(items, theme); yield;
+    if (!F.nav.connected(ps, bs) || !F.nav.connected(ps, { x: 0, z: 0 })) { items.length = base; F = buildWorld(items, theme); }
     placePlatform({ x0: -14, x1: 14, z0: -24, z1: -5 }, 2.8, 3.6, 5.6);
     addAccess(items, tryAdd, rectFor, r);
-    F = buildWorld(items);
-    for (let k = 0; k < 14; k++) {
-      const line = F.nav.connected(ps, bs) ? openSightline(F.world, F.nav) : [{ x: 0, z: 0 }, { x: 0, z: 0 }];
-      if (!line) break;
-      const extra = items.slice(base2);
+    F = buildWorld(items, theme); yield;
+    let safe = false;
+    for (let k = 0; k < 24; k++) {
+      const conn = F.nav.connected(ps, bs) && F.nav.connected(ps, { x: 0, z: 0 });
+      const line = conn ? yield* sightlineGen(F.world, F.nav) : [{ x: 0, z: 0 }, { x: 0, z: 0 }];
+      if (!line) { safe = true; break; }
+      const extra = items.slice(base);
       if (!extra.length) break;
       // Das Zusatz-Objekt entfernen, das am nächsten an der Sichtlinie liegt
       const pts = line.map(p => p.z < 0 ? p : { x: -p.x, z: -p.z });
@@ -472,13 +505,33 @@ export function buildArena(theme, seed) {
       const rm = [best];
       if (best.kind === 'platform' || best.kind === 'ramp') for (const it of extra) if ((it.kind === 'platform' || it.kind === 'ramp') && Math.hypot(it.x - best.x, it.z - best.z) < 6) rm.push(it);
       for (const it of rm) { const i = items.indexOf(it); if (i >= 0) items.splice(i, 1); }
-      F = buildWorld(items);
+      F = buildWorld(items, theme); yield;
     }
-    if (openSightline(F.world, F.nav) || !F.nav.connected(ps, bs)) { items.length = base2; F = buildWorld(items); }
+    if (!safe) { items.length = base; F = buildWorld(items, theme); }
     return Object.assign(finishArena(theme, r, F.world, F.nav, F.cols), { attempts: attempt + 1, safe: true });
   }
   const f = fallback; // sollte praktisch nie passieren
-  return Object.assign(finishArena(theme, f.r, f.world, f.nav, f.cols), { attempts: 30, safe: false });
+  return Object.assign(finishArena(theme, f.r, f.world, f.nav, f.cols), { attempts: 40, safe: false });
+}
+
+export function buildArena(theme, seed) {
+  const g = genArena(theme, seed); let r;
+  do r = g.next(); while (!r.done);
+  return r.value;
+}
+// Baut die Arena in kleinen Stücken (max. ~budget ms pro Frame)
+export function buildArenaAsync(theme, seed, budget = 8) {
+  const g = genArena(theme, seed);
+  return new Promise((resolve, reject) => {
+    const step = () => {
+      const t0 = performance.now();
+      try {
+        for (;;) { const r = g.next(); if (r.done) return resolve(r.value); if (performance.now() - t0 > budget) break; }
+      } catch (e) { return reject(e); }
+      setTimeout(step, 0);
+    };
+    step();
+  });
 }
 
 function finishArena(theme, r, world, nav, cols) {
@@ -489,26 +542,10 @@ function finishArena(theme, r, world, nav, cols) {
   const outer = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), toon({ vorstadt: '#6cc24a', schulhof: '#7ab85a', supermarkt: '#9c9c9c', akw: '#a8a58f' }[theme]));
   outer.rotation.x = -Math.PI / 2; outer.position.y = -0.02; group.add(outer);
   decorateGround(group, theme, r);
-  const built = new Map();
+  const built = new Set();
   for (const c of cols) {
-    const it = c.item;
-    if (built.has(it)) { c.mesh = built.get(it); continue; }
-    let obj;
-    if (it.kind === 'stairs') obj = stairs(it, theme);
-    else if (it.kind === 'step') obj = stepBox(null, it.fw, it.fd, it.h, theme);
-    else if (it.kind === 'bridge') obj = bridge(it, theme);
-    else if (it.kind === 'ramp') {
-      const len = it.axis === 'x' ? it.w : it.d, width = it.axis === 'x' ? it.d : it.w;
-      obj = wedge(len, it.h, width, { vorstadt: '#c98a4b', schulhof: '#e05a5a', supermarkt: '#8a93a6', akw: '#7d8795' }[theme]);
-      if (it.axis === 'x') { if (it.dir < 0) obj.rotation.y = Math.PI; } else obj.rotation.y = it.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
-    } else {
-      obj = it.make(rng(it.seed || 1), theme).obj;
-      if (it.rot) obj.rotation.y = Math.PI / 2;
-      if (it.mirror) obj.rotation.y += Math.PI;
-    }
-    if (it.kind !== 'stairs' && it.kind !== 'bridge') obj.position.set(it.x, 0, it.z);
-    group.add(obj);
-    c.mesh = obj; built.set(it, obj);
+    const obj = visualFor(c.item, theme);
+    if (!built.has(obj)) { built.add(obj); group.add(obj); }
   }
   const wallMat = { vorstadt: toon('#ffffff', { map: tex('planks') }), schulhof: toon('#ffffff', { map: tex('brick') }), supermarkt: toon('#ffffff', { map: tex('wallpaper') }), akw: toon('#ffffff', { map: tex('hazard') }) }[theme];
   for (const c of world.colliders) if (c.perimeter) {

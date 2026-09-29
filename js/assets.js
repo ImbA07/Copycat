@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from '../vendor/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from '../vendor/addons/utils/SkeletonUtils.js';
 import { toon } from './toon.js';
+import { loadMotions } from './anim.js';
 
 export const PROPS = [
   'city-kit-suburban/building-type-a', 'city-kit-suburban/building-type-c', 'city-kit-suburban/building-type-f', 'city-kit-suburban/building-type-h',
@@ -41,14 +42,15 @@ export async function loadAssets(onProgress) {
   const url = p => new URL(`../assets/${p}.glb`, import.meta.url).href;
   const all = [...PROPS.map(p => ['prop', p, url('props/' + p)]), ...CHARS.map(c => ['char', c, url('characters/' + c)])];
   let done = 0;
-  await Promise.all(all.map(([kind, name, url]) => new Promise((res, rej) => loader.load(url, g => {
+  const motions = loadMotions(new URL('../assets/anims.json', import.meta.url).href);
+  await Promise.all([motions, ...all.map(([kind, name, url]) => new Promise((res, rej) => loader.load(url, g => {
     if (kind === 'prop') {
       g.scene.traverse(o => { if (o.isMesh) { o.material = Array.isArray(o.material) ? o.material.map(toToon) : toToon(o.material); } });
       const box = new THREE.Box3().setFromObject(g.scene);
       store.props[name] = { scene: g.scene, size: box.getSize(new THREE.Vector3()), center: box.getCenter(new THREE.Vector3()), min: box.min.clone() };
     } else store.chars[name] = g;
     onProgress?.(++done / all.length); res();
-  }, undefined, e => rej(new Error('Modell fehlt: ' + url))))));
+  }, undefined, e => rej(new Error('Modell fehlt: ' + url)))))]);
 }
 
 // Kopie eines Objekts, auf Zielhöhe/-länge skaliert, Unterseite auf y=0, mittig

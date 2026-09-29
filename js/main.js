@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { settings, profile, saveProfile, T, SCORE, FOV_HORIZONTAL } from './config.js';
 import { Input } from './input.js';
 import { ComicRenderer, LAYER_FX, shadows } from './toon.js';
-import { buildArena, THEMES, THEME_NAMES } from './arena.js';
+import { buildArena, buildArenaAsync, THEMES, THEME_NAMES } from './arena.js';
 import { buildMango, buildCopycat, buildViewmodel } from './characters.js';
 import { loadAssets } from './assets.js';
 import { Actor, RECOIL } from './actor.js';
@@ -75,7 +75,9 @@ class Game {
     this.state = 'menu'; this.mode = 'menu';
     this.ui.hud(false); this.ui.show('screen-start');
     this.wantLock = false; this.input.enabled = false; this.input.unlock();
-    this.loadArena('vorstadt', 4242);
+    if (!this.menuArena) { this.menuArena = buildArena('vorstadt', 4242); this.menuArena.keep = true; }
+    this.setArena(this.menuArena);
+    this.prepareArena();
     this.player.reset(); this.bot.reset();
     this.player.pos = { x: 0.2, y: 0, z: -3 }; this.player.yaw = -0.15;
     this.bot.pos = { x: 2.0, y: 0, z: -3 }; this.bot.yaw = -0.45;
@@ -100,9 +102,11 @@ class Game {
   }
 
   // ======================= Arena =======================
-  loadArena(theme, seed) {
-    if (this.arena) { this.scene.remove(this.arena.group); this.arena.dispose(); }
-    this.arena = buildArena(theme, seed);
+  loadArena(theme, seed) { this.setArena(buildArena(theme, seed)); }
+  setArena(a) {
+    if (this.arena === a) return;
+    if (this.arena) { this.scene.remove(this.arena.group); if (!this.arena.keep) this.arena.dispose(); }
+    this.arena = a;
     shadows(this.arena.group);
     this.scene.add(this.arena.group);
     this.effects?.clearDecals();
@@ -119,11 +123,27 @@ class Game {
     this.brain = new CopycatBrain(this);
     this.nextRound();
   }
-  nextRound() {
-    this.round++;
+  // Nächste Karte schon im Hintergrund bauen (z. B. während der Zwischenbildschirm läuft)
+  prepareArena() {
+    if (this.arenaJob) return;
     let theme; do { theme = THEMES[(Math.random() * THEMES.length) | 0]; } while (theme === this.lastTheme);
     this.lastTheme = theme;
-    this.loadArena(theme, (Math.random() * 1e9) | 0);
+    const job = this.arenaJob = { theme, ready: null };
+    const seed = (Math.random() * 1e9) | 0;
+    job.promise = buildArenaAsync(theme, seed).then(a => (job.ready = a), e => { console.error(e); return (job.ready = buildArena(theme, seed)); });
+  }
+  nextRound() {
+    this.prepareArena();
+    const job = this.arenaJob;
+    if (!job.ready) {
+      if (this.state !== 'loading') { this.loadingFrom = this.state; this.state = 'loading'; this.ui.hideScreens(); this.ui.center('KARTE WIRD GEBAUT…', '', 30); }
+      job.promise.then(() => { if (this.state === 'loading') this.nextRound(); });
+      return;
+    }
+    this.arenaJob = null;
+    this.round++;
+    const theme = job.theme;
+    this.setArena(job.ready);
     this.effects.clear(); this.dialog.reset();
     const P = this.player, B = this.bot, sp = this.arena.spawns;
     const keepP = P.syringes, keepB = B.syringes;
@@ -131,7 +151,7 @@ class Game {
     P.pos = { x: sp.player.x, y: 0, z: sp.player.z }; P.yaw = sp.player.yaw; P.pitch = 0;
     B.pos = { x: sp.bot.x, y: 0, z: sp.bot.z }; B.yaw = sp.bot.yaw; B.pitch = 0;
     this.mango.root.visible = true; this.copycat.root.visible = true;
-    this.brain.resetRound(); this.brain.model.setRound(this.round);
+    this.brain.model.setRound(this.round); this.brain.resetRound();
     this.flag = { active: false, progress: { player: 0, bot: 0 }, owner: null, spawnT: 0, rise: 0, warned: false };
     this.arena.flag.group.visible = false;
     this.roundTime = 0; this.countdown = 3; this.state = 'countdown';
@@ -345,8 +365,8 @@ class Game {
       switch (ev.type) {
         case 'fire': this.shoot(ev); break;
         case 'empty': if (isP) audio.play('empty'); break;
-        case 'reload': audio.play('reload', isP ? null : pos, 0.8); if (isP) { this.brain?.model.onReload(ev.ammoLeft); this.brain?.hear(A.pos, 16); this.tutFlags.reload = true; } break;
-        case 'heal': audio.play('syringe', isP ? null : pos); if (isP) { this.brain?.model.onHeal(ev.hp); this.brain?.hear(A.pos, 16); this.tutFlags.heal = true; } break;
+        case 'reload': audio.play('reload', isP ? null : pos, 0.8); if (isP) { this.brain?.model.onReload(ev.ammoLeft); this.brain?.hear(A.pos, 16); this.botNotices(A) && this.brain.noticeWindow('reload', T.reloadTime); this.tutFlags.reload = true; } break;
+        case 'heal': audio.play('syringe', isP ? null : pos); if (isP) { this.brain?.model.onHeal(ev.hp); this.brain?.hear(A.pos, 16); this.botNotices(A) && this.brain.noticeWindow('heal', T.syringeAnim + 0.6); this.tutFlags.heal = true; } break;
         case 'stab': audio.play('click', isP ? null : pos, 0.6); break;
         case 'healtick': if (isP) audio.play('heal', null, 0.5); this.effects.healSparkles(A.pos); break;
         case 'jump': audio.play('jump', isP ? null : pos, 0.6); if (isP) { this.brain?.model.onTrick('jump'); this.tutFlags.jump = true; } break;
@@ -377,6 +397,12 @@ class Game {
     }
   }
 
+  // Bekommt Copycat mit, was Mango gerade macht? (sieht ihn oder hört es in der Nähe)
+  botNotices(A) {
+    if (!this.brain || this.mode !== 'run') return false;
+    const B = this.bot, d = Math.hypot(A.pos.x - B.pos.x, A.pos.z - B.pos.z);
+    return this.brain.seenT > 0 || d < 16;
+  }
   onBotTaunt(type) {
     const b = this.bot.pos;
     audio.play('kazoo', { x: b.x, y: b.y + 2, z: b.z }, 1.2);
@@ -417,9 +443,11 @@ class Game {
     if (d.bonusSyr) pts.push(['💉 3× ohne Schaden: Extra-Spritze!', '']);
     this.ui.intermission({ title: d.how === 'flag' ? `RUNDE ${this.round}: FLAGGE EROBERT!` : `RUNDE ${this.round} GEWONNEN!`, points: pts, total: this.score, lines, dossier: this.brain.model.dossier() });
     audio.setMode('calm');
+    this.prepareArena();
   }
 
   gameOver() {
+    this.prepareArena();
     this.state = 'over'; this.wantLock = false; this.input.enabled = false; this.input.unlock();
     try { if (document.fullscreenElement) document.exitFullscreen(); } catch { /* egal */ }
     audio.setMode('calm');
@@ -633,7 +661,7 @@ class Game {
   tick(dt, rawDt) {
     const st = this.state;
     if (st === 'menu') { this.updateMenu(rawDt); this.effects.update(rawDt); return; }
-    if (st === 'paused' || st === 'over' || st === 'intermission') {
+    if (st === 'paused' || st === 'over' || st === 'intermission' || st === 'loading') {
       if (st !== 'paused') this.orbitCamera(rawDt);
       this.dialog.update(p => this.effects.project(p), this.headPos(this.copycat), this.copycat.root.visible);
       if (st === 'intermission' || st === 'over') { this.bot.syncRig(rawDt); this.player.syncRig(rawDt); }
