@@ -31,7 +31,7 @@ const store = { props: {}, chars: {} };
 const matCache = new Map();
 function toToon(m) {
   if (matCache.has(m)) return matCache.get(m);
-  const t = new THREE.MeshToonMaterial({ color: m.color ? m.color.clone() : 0xffffff, map: m.map || null, gradientMap: toon('#ffffff').gradientMap, vertexColors: m.vertexColors, side: m.side, transparent: m.transparent, opacity: m.opacity });
+  const t = toon(m.color ? '#' + m.color.getHexString() : '#ffffff', { unique: true, map: m.map || null, vertexColors: m.vertexColors, side: m.side, transparent: m.transparent, opacity: m.opacity, rough: 0.58 });
   t.name = m.name;
   matCache.set(m, t); return t;
 }

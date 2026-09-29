@@ -119,23 +119,72 @@ class AudioSys {
     }
   }
 
-  // ---------------- Sprache ----------------
-  async load(url) {
-    if (this.buffers.has(url)) return this.buffers.get(url);
-    const p = fetch(url).then(r => r.arrayBuffer()).then(b => this.ctx.decodeAudioData(b)).catch(() => null);
-    this.buffers.set(url, p); return p;
-  }
-  preload(urls) { if (this.ctx) urls.forEach(u => this.load(u)); }
-  async voice(url) {
+  // ---------------- Comic-Gebrabbel (Fantasiesprache, live erzeugt) ----------------
+  // Silben richten sich nach den Buchstaben des Textes (Vokal -> Klangfarbe, Konsonant -> kurzes Zischen/Klicken).
+  babble(text, mood = 'frech') {
     if (!this.ctx) return null;
-    const buf = await this.load(url);
-    if (!buf) return null;
-    const src = this.ctx.createBufferSource(); src.buffer = buf;
-    src.connect(this.voiceBus); src.start();
-    // Musik währenddessen etwas leiser
-    const t = this.now, dur = buf.duration;
-    this.duck.gain.cancelScheduledValues(t); this.duck.gain.setTargetAtTime(0.55, t, 0.05); this.duck.gain.setTargetAtTime(1, t + dur, 0.3);
-    return { src, dur };
+    const ctx = this.ctx, t0 = this.now + 0.03;
+    const M = {
+      frech: { base: 300, spread: 0.28, rate: 0.085, wave: 'sawtooth', gain: 0.5 },
+      fies: { base: 250, spread: 0.18, rate: 0.095, wave: 'sawtooth', gain: 0.5 },
+      wuetend: { base: 205, spread: 0.12, rate: 0.075, wave: 'square', gain: 0.42 },
+      lachen: { base: 330, spread: 0.2, rate: 0.07, wave: 'sawtooth', gain: 0.5 },
+      aufgeregt: { base: 360, spread: 0.32, rate: 0.068, wave: 'sawtooth', gain: 0.5 },
+    }[mood] || { base: 300, spread: 0.25, rate: 0.085, wave: 'sawtooth', gain: 0.5 };
+    const F = { a: [800, 1200], e: [420, 2000], i: [300, 2350], o: [480, 820], u: [330, 720], ä: [650, 1700], ö: [430, 1500], ü: [300, 1800] };
+    // Text in Silben zerlegen (Konsonanten + Vokal)
+    const clean = text.toLowerCase().replace(/[^a-zäöüß!?., ]/g, '');
+    const syl = [];
+    let cons = '';
+    for (const ch of clean) {
+      if ('aeiouäöü'.includes(ch)) { syl.push({ v: ch, c: cons }); cons = ''; }
+      else if (ch === ' ' || ch === ',' || ch === '.') { if (syl.length) syl[syl.length - 1].pause = ch === ' ' ? 0.03 : 0.12; cons = ''; }
+      else if ('!?'.includes(ch)) { if (syl.length) syl[syl.length - 1].end = ch; }
+      else cons += ch;
+    }
+    const list = syl.slice(0, 26);
+    if (mood === 'lachen') list.unshift({ v: 'a', c: 'h' }, { v: 'a', c: 'h' }, { v: 'a', c: 'h', pause: 0.1 });
+    const out = ctx.createGain(); out.gain.value = M.gain; out.connect(this.voiceBus);
+    const f1 = ctx.createBiquadFilter(), f2 = ctx.createBiquadFilter(); f1.type = f2.type = 'bandpass'; f1.Q.value = 6; f2.Q.value = 9;
+    const src = ctx.createOscillator(); src.type = M.wave;
+    const sub = ctx.createOscillator(); sub.type = 'triangle';
+    const vg = ctx.createGain(); vg.gain.value = 0;
+    src.connect(vg); sub.connect(vg);
+    const g2 = ctx.createGain(); g2.gain.value = 0.7;
+    vg.connect(f1).connect(out); vg.connect(f2).connect(g2).connect(out);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200; vg.connect(lp); const lg = ctx.createGain(); lg.gain.value = 0.12; lp.connect(lg).connect(out);
+    // Vibrato
+    const vib = ctx.createOscillator(), vibG = ctx.createGain(); vib.frequency.value = 7; vibG.gain.value = 6; vib.connect(vibG); vibG.connect(src.frequency); vibG.connect(sub.frequency);
+    let t = t0; const n = list.length;
+    list.forEach((s, i) => {
+      const d = M.rate * (0.8 + Math.random() * 0.5) * (s.end ? 1.6 : 1);
+      // Satzmelodie: leicht fallend, am Ende von Fragen/Ausrufen hoch
+      let p = M.base * (1 + (Math.random() - 0.5) * M.spread) * (1 - 0.12 * i / Math.max(1, n));
+      if (s.end === '?') p *= 1.35; if (s.end === '!') p *= mood === 'wuetend' ? 1.1 : 1.22;
+      if (mood === 'lachen' && s.c === 'h') p *= 1.2 - i * 0.04;
+      // Konsonant: kurzer Rausch-/Klick-Anlaut
+      if (s.c) {
+        const hard = /[sßzcxfv]/.test(s.c) ? 'hiss' : /[ptkbdg]/.test(s.c) ? 'click' : 'soft';
+        if (hard !== 'soft') {
+          const nb = ctx.createBufferSource(); nb.buffer = this.noise; const nf = ctx.createBiquadFilter(), ng = ctx.createGain();
+          nf.type = hard === 'hiss' ? 'highpass' : 'bandpass'; nf.frequency.value = hard === 'hiss' ? 4500 : 1800;
+          const nd = hard === 'hiss' ? 0.05 : 0.018;
+          ng.gain.setValueAtTime(0.0001, t); ng.gain.exponentialRampToValueAtTime(hard === 'hiss' ? 0.25 : 0.4, t + 0.004); ng.gain.exponentialRampToValueAtTime(0.0001, t + nd);
+          nb.connect(nf).connect(ng).connect(out); nb.start(t, Math.random()); nb.stop(t + nd + 0.02);
+          t += nd * 0.6;
+        }
+      }
+      const [a, b] = F[s.v] || F.a;
+      src.frequency.setTargetAtTime(p, t, 0.012); sub.frequency.setTargetAtTime(p / 2, t, 0.012);
+      f1.frequency.setTargetAtTime(a * (p / 300) ** 0.25, t, 0.015); f2.frequency.setTargetAtTime(b * (p / 300) ** 0.25, t, 0.015);
+      vg.gain.setTargetAtTime(0.9, t, 0.008); vg.gain.setTargetAtTime(0.0, t + d * 0.78, 0.018);
+      t += d + (s.pause || 0);
+    });
+    const end = t + 0.1;
+    for (const o of [src, sub, vib]) { o.start(t0); o.stop(end); }
+    const dur = end - this.now;
+    this.duck.gain.cancelScheduledValues(this.now); this.duck.gain.setTargetAtTime(0.55, this.now, 0.05); this.duck.gain.setTargetAtTime(1, end, 0.3);
+    return { src: { stop: () => { try { out.gain.setTargetAtTime(0, ctx.currentTime, 0.02); } catch { /* egal */ } } }, dur };
   }
 
   // ---------------- Musik ----------------

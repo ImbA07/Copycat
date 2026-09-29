@@ -174,7 +174,9 @@ export class Actor {
     const prevX = this.pos.x, prevZ = this.pos.z;
     this.pos.x += this.vel.x * dt; this.pos.z += this.vel.z * dt;
     const r = this.rig.spec.bodyR * 0.9;
-    const bumped = world.pushOut(this.pos, r, this.pos.y, this.height, T.stepHeight);
+    // Kanten-Hilfe: in der Luft zieht man sich an Kanten bis ~0,95 m über den Füßen hoch statt abzuprallen
+    const assist = this.onGround ? T.stepHeight : (this.vel.y > 5 ? 0.45 : T.mantle);
+    const bumped = world.pushOut(this.pos, r, this.pos.y, this.height, assist);
     if (bumped && this.dashT > 0) { this.dashT = 0; const v = Math.hypot(this.vel.x, this.vel.z); if (v > T.walk) { this.vel.x *= T.walk / v; this.vel.z *= T.walk / v; } }
     // tatsächliche Geschwindigkeit nach Kollision
     if (dt > 0) {
@@ -182,7 +184,9 @@ export class Actor {
       if (bumped) { this.vel.x = ax; this.vel.z = az; }
     }
     this.pos.y += this.vel.y * dt;
-    const g = world.groundHeight(this.pos.x, this.pos.z, r * 0.8, this.pos.y + Math.max(0, -this.vel.y * dt), this.onGround ? T.stepHeight : 0.12);
+    const airMantle = !this.onGround && this.vel.y <= 1.5;
+    const g = world.groundHeight(this.pos.x, this.pos.z, airMantle ? r * 1.2 : r * 0.8, this.pos.y + Math.max(0, -this.vel.y * dt), this.onGround ? T.stepHeight : (airMantle ? T.mantle : 0.12));
+    if (airMantle && g > this.pos.y + 0.05) { this.pos.y = g; this.vel.y = 0; this.mantled = true; }
     const wasGround = this.onGround;
     if (this.pos.y <= g + 0.001 && this.vel.y <= 0) {
       if (!wasGround && this.airTime > 0.25) ev.push({ type: 'land', actor: this, fall: -this.vel.y });

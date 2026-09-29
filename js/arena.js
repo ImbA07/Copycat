@@ -1,7 +1,7 @@
 // Zufällige, spiegelsymmetrische Arenen in vier Themen – mit echten 3D-Modellen (Kenney, CC0).
 // Jede Karte wird geprüft: In den ersten Sekunden nach dem Start kann man sich NICHT sehen.
 import * as THREE from 'three';
-import { toon, flat, box, sphere, cyl, cone, LAYER_SKY, LAYER_FX } from './toon.js';
+import { toon, flat, box, rbox, sphere, cyl, cone, LAYER_SKY, LAYER_FX } from './toon.js';
 import { World, NavGrid } from './world.js';
 import { prop } from './assets.js';
 
@@ -125,12 +125,58 @@ const custom = {
     return g;
   },
 };
+function stepBox(r, w, d, h, theme) {
+  const g = new THREE.Group();
+  const col = { vorstadt: ['#c98a4b', '#8f5a2c'], schulhof: ['#3d7fd8', '#2a5aa0'], supermarkt: ['#caa06a', '#8a6a42'], akw: ['#b3b0a2', '#ffd83a'] }[theme];
+  if (theme === 'schulhof') { for (let i = 0; i < 4; i++) g.add(rbox(w - i * 0.02, h / 4 - 0.02, d - i * 0.02, i % 2 ? col[0] : col[1], 0, h / 8 + i * h / 4, 0, 0.08)); return g; }
+  if (theme === 'supermarkt') { g.add(box(w, 0.15, d, col[1], 0, 0.075, 0)); for (let i = 0; i < 4; i++) g.add(rbox(w / 2 - 0.04, h - 0.2, d / 2 - 0.04, i % 2 ? '#d9b07a' : '#e8c48e', (i % 2 - 0.5) * w / 2, 0.15 + (h - 0.2) / 2, ((i >> 1) - 0.5) * d / 2, 0.03)); return g; }
+  g.add(rbox(w, h, d, col[0], 0, h / 2, 0, 0.05));
+  for (const y of [0.15, h - 0.15]) g.add(box(w + 0.02, 0.12, d + 0.02, col[1], 0, y, 0));
+  const brace = box(w * 1.2, 0.1, 0.06, col[1], 0, h / 2, d / 2 + 0.01); brace.rotation.z = Math.atan2(h - 0.3, w); g.add(brace);
+  return g;
+}
+const STAIR_COL = { vorstadt: ['#c98a4b', '#a86e38'], schulhof: ['#e05a5a', '#b84444'], supermarkt: ['#9aa3b5', '#7b8496'], akw: ['#ffcf3a', '#7d8795'] };
+function stairs(it, theme) {
+  const g = new THREE.Group(), [c1, c2] = STAIR_COL[theme];
+  const len = it.axis === 'x' ? it.fw : it.fd, wid = it.axis === 'x' ? it.fd : it.fw;
+  const n = Math.max(4, Math.round(it.h / 0.32)), sl = len / n;
+  const inner = new THREE.Group(); g.add(inner);
+  for (let i = 0; i < n; i++) {
+    const h = it.h * (i + 1) / n;
+    inner.add(box(sl + 0.01, 0.12, wid, i % 2 ? c1 : c2, -len / 2 + sl * (i + 0.5), h - 0.06, 0));
+    inner.add(box(sl + 0.01, h - 0.12, wid * 0.9, '#5a5a66', -len / 2 + sl * (i + 0.5), (h - 0.12) / 2, 0));
+  }
+  for (const sz of [-1, 1]) { const rail = box(len * 1.05, 0.06, 0.06, '#3a3440', 0, 0, sz * wid / 2); rail.position.y = it.h / 2 + 0.9; rail.rotation.z = Math.atan2(it.h, len); inner.add(rail); }
+  // steigt entlang +X; dir > 0 heißt: steigt zur +Achse
+  if (it.axis === 'x') { if (it.dir < 0) inner.rotation.y = Math.PI; } else inner.rotation.y = it.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
+  g.position.set(it.x, 0, it.z);
+  return g;
+}
+function bridge(it, theme) {
+  const g = new THREE.Group(), [c1, c2] = STAIR_COL[theme];
+  const alongX = it.fw > it.fd, L = alongX ? it.fw : it.fd, W = alongX ? it.fd : it.fw;
+  const inner = new THREE.Group(); g.add(inner); if (!alongX) inner.rotation.y = Math.PI / 2;
+  const n = Math.max(3, Math.round(L / 0.45));
+  for (let i = 0; i < n; i++) inner.add(box(L / n - 0.04, 0.12, W, i % 2 ? c1 : c2, -L / 2 + (i + 0.5) * L / n, -0.08, 0));
+  inner.add(box(L, 0.1, 0.1, '#3a3440', 0, -0.2, W / 2 - 0.05)); inner.add(box(L, 0.1, 0.1, '#3a3440', 0, -0.2, -W / 2 + 0.05));
+  for (const sz of [-1, 1]) { inner.add(box(L, 0.05, 0.05, '#3a3440', 0, 0.85, sz * W / 2)); for (let x = -L / 2; x <= L / 2 + 0.01; x += L / Math.ceil(L / 1.2)) inner.add(box(0.05, 0.85, 0.05, '#3a3440', x, 0.42, sz * W / 2)); }
+  g.position.set(it.x, it.h, it.z);
+  return g;
+}
 const PASTEL = ['#ff9fb3', '#9fd3ff', '#ffe08a', '#b7f0a5', '#d7b8ff', '#ffc38a'];
 
+// Stapel aus zwei Stufen (1,3 m und 2,4 m hoch) – wie eine kleine Treppe zum Hochspringen
+function stackOf(r, w, d, h, theme) {
+  const g = new THREE.Group();
+  const a = stepBox(r, w / 2, d, 1.2, theme); a.position.x = -w / 4; g.add(a);
+  const b = stepBox(r, w / 2, d, 1.2, theme); b.position.x = w / 4; g.add(b);
+  const c = stepBox(r, w / 2, d, 1.2, theme); c.position.set(w / 4, 1.2, 0); g.add(c);
+  return g;
+}
 // ---------- Katalog je Thema ----------
 // Jeder Eintrag erzeugt {obj, w, d, h} (w = Breite in x, d = Tiefe in z, Höhe h). Modelle stehen mittig auf y=0.
 const M = (name, opt, extra = {}) => r => { const o = prop(name, opt); const s = o.userData.size; return { obj: o, w: s.x, d: s.z, h: s.y, ...extra }; };
-const C = (fn, w, d, h) => (r, theme) => ({ obj: fn(r, w, d, h, theme), w, d, h });
+const C = (fn, w, d, h, extra = {}) => (r, theme) => ({ obj: fn(r, w, d, h, theme), w, d, h, ...extra });
 const tinted = (name, opt, color) => r => { const o = prop(name, opt); o.traverse(m => { if (m.isMesh) { m.material = m.material.clone(); m.material.color.set(color); } }); const s = o.userData.size; return { obj: o, w: s.x, d: s.z, h: s.y }; };
 const row = (names, n, opt) => r => {
   const g = new THREE.Group(); let w = 0, d = 0, h = 0; const parts = [];
@@ -141,22 +187,24 @@ const row = (names, n, opt) => r => {
 const SHELVES = ['mini-market/shelf-boxes', 'mini-market/shelf-bags'];
 const CATALOG = {
   vorstadt: {
-    big: ['building-type-a', 'building-type-c', 'building-type-f', 'building-type-h', 'building-type-d'].map(n => M('city-kit-suburban/' + n, { length: 6.4 })),
-    car: ['sedan', 'suv', 'hatchback-sports', 'van', 'taxi', 'police'].map(n => M('car-kit/' + n, { length: 4.4 })),
+    big: ['building-type-a', 'building-type-c', 'building-type-f', 'building-type-h', 'building-type-d'].map(n => M('city-kit-suburban/' + n, { length: 6.4 }, { noClimb: true })),
+    car: ['sedan', 'suv', 'hatchback-sports', 'van', 'taxi', 'police'].map(n => M('car-kit/' + n, { length: 4.4 }, { shape: 'car' })),
     wall: [C(custom.hedge, 4.4, 1.0, 2.3), C(custom.hedge, 3.6, 1.0, 2.3)],
     low: [M('city-kit-suburban/planter', { width: 2.3 }), C(custom.concrete, 2.2, 1.0, 1.1)],
     crate: [M('furniture/cardboardBoxClosed', { height: 1.25 })],
     barrel: [tinted('survival-kit/barrel', { height: 1.15 }, '#ff8a80')],
     fence: [C(custom.fence, 3.2, 0.25, 1.5)],
+    stack: [C(stackOf, 2.6, 1.3, 2.4)],
   },
   schulhof: {
     big: [M('car-kit/garbage-truck', { length: 6.6 }), M('car-kit/delivery', { length: 6.2 }), M('car-kit/truck', { length: 6.2 }), C(custom.bus, 2.6, 8, 3.1)],
-    car: ['van', 'sedan', 'suv'].map(n => M('car-kit/' + n, { length: 4.4 })),
+    car: ['van', 'sedan', 'suv'].map(n => M('car-kit/' + n, { length: 4.4 }, { shape: 'car' })),
     wall: [C(custom.lockers, 3.6, 0.7, 2.3), C(custom.lockers, 4.8, 0.7, 2.3)],
     low: [M('furniture/bench', { width: 2.4 }), C(custom.concrete, 2.2, 1.0, 1.1)],
     crate: [M('furniture/cardboardBoxClosed', { height: 1.25 })],
     barrel: [tinted('survival-kit/barrel', { height: 1.15 }, '#ff8a80')],
     fence: [C(custom.fence, 3.2, 0.25, 1.5)],
+    stack: [C(stackOf, 2.6, 1.3, 2.4)],
   },
   supermarkt: {
     big: [row(['mini-market/freezers-standing'], 2, { height: 2.7 }), row(SHELVES, 3, { height: 2.5 }), row(['mini-market/shelf-bags', 'mini-market/shelf-boxes'], 3, { height: 2.5 })],
@@ -166,6 +214,7 @@ const CATALOG = {
     crate: [M('furniture/cardboardBoxClosed', { height: 1.25 })],
     barrel: [tinted('survival-kit/barrel', { height: 1.15 }, '#ff8a80')],
     fence: [C(custom.fence, 3.0, 0.25, 1.5)],
+    stack: [C(stackOf, 2.6, 1.3, 2.4)],
   },
   akw: {
     big: ['a', 'b', 'c'].map(n => M('city-kit-industrial/shipping-container-' + n, { length: 6.6 })).concat([M('city-kit-industrial/detail-tank-large', { length: 4.8 })]),
@@ -175,6 +224,7 @@ const CATALOG = {
     crate: [M('survival-kit/box', { height: 1.25 })],
     barrel: [C(custom.toxic, 0.84, 0.84, 1.1)],
     fence: [C(custom.fence, 3.2, 0.25, 1.5)],
+    stack: [C(stackOf, 2.6, 1.3, 2.4)],
   },
 };
 
@@ -198,7 +248,7 @@ function plan(r, theme) {
     for (let k = 0; k < tries; k++) {
       const make = list[(r() * list.length) | 0];
       const it = { kind, make, rot: r() < 0.5, x: zone.x0 + r() * (zone.x1 - zone.x0), z: zone.z0 + r() * (zone.z1 - zone.z0), seed: (r() * 1e9) | 0 };
-      if (!dimCache.has(make)) { const p = make(rng(1), theme); dimCache.set(make, { w: p.w, d: p.d, h: p.h }); }
+      if (!dimCache.has(make)) { const p = make(rng(1), theme); dimCache.set(make, { w: p.w, d: p.d, h: p.h, shape: p.shape, noClimb: p.noClimb }); }
       Object.assign(it, dimCache.get(make));
       if (it.h < minH) continue;
       if (rot === 'wide') it.rot = it.w < it.d; else if (rot !== null) it.rot = rot;
@@ -214,25 +264,85 @@ function plan(r, theme) {
   // 3) Seitliche Deckung auf den Flanken
   place('wall', { x0: -15, x1: -8, z0: -12, z1: -4 }, { margin: 1.6 });
   place('wall', { x0: 8, x1: 15, z0: -12, z1: -4 }, { margin: 1.6 });
-  // 4) Plattform mit Rampe
-  const plat = { kind: 'platform', make: C(custom.platform, 3.2, 3.2, 1.9), rot: false, w: 3.2, d: 3.2, h: 1.9, fw: 3.2, fd: 3.2 };
-  for (let k = 0; k < 60; k++) {
-    plat.x = -12 + r() * 24; plat.z = -22 + r() * 14;
-    if (!fits(plat, 5)) continue;
-    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => r() - 0.5);
-    let ok = false;
-    for (const [dx, dz] of dirs) {
-      const len = 4.2, rx = plat.x + dx * (1.6 + len / 2), rz = plat.z + dz * (1.6 + len / 2);
-      const ramp = { kind: 'ramp', x: rx, z: rz, w: dx ? len : 2.2, d: dx ? 2.2 : len, h: 1.9, axis: dx ? 'x' : 'z', dir: -(dx || dz), rot: false };
-      ramp.fw = ramp.w; ramp.fd = ramp.d;
-      const R = rectOf(ramp);
-      if (R.minX < -HALF_X + 0.8 || R.maxX > HALF_X - 0.8 || R.minZ < -HALF_Z + 0.8 || R.maxZ > -1.5 || Math.hypot(rx, rz + SPAWN_Z) < 4) continue;
-      if (rects.some(o => overl(R, o, 1.2))) continue;
-      rects.push(rectOf(plat), R); items.push(plat, ramp); ok = true; break;
+  // 4) Plattformen mit Rampe (eine normale, eine hohe Aussichtsplattform)
+  const placePlatform = (zone, h, size, len) => {
+    const plat = { kind: 'platform', make: C(custom.platform, size, size, h), rot: false, w: size, d: size, h, fw: size, fd: size };
+    for (let k = 0; k < 60; k++) {
+      plat.x = zone.x0 + r() * (zone.x1 - zone.x0); plat.z = zone.z0 + r() * (zone.z1 - zone.z0);
+      if (!fits(plat, 4)) continue;
+      const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => r() - 0.5);
+      for (const [dx, dz] of dirs) {
+        const rx = plat.x + dx * (size / 2 + len / 2), rz = plat.z + dz * (size / 2 + len / 2);
+        const ramp = { kind: 'ramp', x: rx, z: rz, w: dx ? len : 2.2, d: dx ? 2.2 : len, h, axis: dx ? 'x' : 'z', dir: -(dx || dz), rot: false };
+        ramp.fw = ramp.w; ramp.fd = ramp.d;
+        const Rr = rectOf(ramp);
+        if (Rr.minX < -HALF_X + 0.8 || Rr.maxX > HALF_X - 0.8 || Rr.minZ < -HALF_Z + 0.8 || Rr.maxZ > -1.5 || Math.hypot(rx, rz + SPAWN_Z) < 4) continue;
+        if (rects.some(o => overl(Rr, o, 1.2))) continue;
+        rects.push(rectOf(plat), Rr); items.push(plat, ramp); return plat;
+      }
     }
-    if (ok) break;
+    return null;
+  };
+  placePlatform({ x0: -12, x1: 12, z0: -22, z1: -8 }, 1.9, 3.2, 4.2);
+  // Objekt direkt neben ein anderes stellen (für Treppen)
+  const tryAdd = (it, margin, own) => {
+    const Rr = rectOf(it);
+    if (Rr.minX < -HALF_X + 0.4 || Rr.maxX > HALF_X - 0.4 || Rr.minZ < -HALF_Z + 0.4 || Rr.maxZ > -0.8) return false;
+    for (const c of clear) { const cx = Math.max(Rr.minX, Math.min(c.x, Rr.maxX)), cz = Math.max(Rr.minZ, Math.min(c.z, Rr.maxZ)); if (Math.hypot(cx - c.x, cz - c.z) < c.r) return false; }
+    for (const o of rects) { if (o !== own && overl(Rr, o, margin)) return false; if (overl(Rr, { minX: -o.maxX, maxX: -o.minX, minZ: -o.maxZ, maxZ: -o.minZ }, margin)) return false; }
+    rects.push(Rr); items.push(it); return true;
+  };
+  const rectFor = it => rects.find(o => Math.abs((o.minX + o.maxX) / 2 - it.x) < 1e-6 && Math.abs((o.minZ + o.maxZ) / 2 - it.z) < 1e-6);
+  return { items, place, tryAdd, rectFor, placePlatform };
+}
+
+// Treppen an hohe Objekte + Stege zwischen gleich hohen Dächern -> mehr Ebenen zum Draufspringen
+function addAccess(items, tryAdd, rectFor, r) {
+  const tall = items.filter(it => ['big', 'wall', 'platform'].includes(it.kind) && !it.noClimb && it.h >= 2.2 && it.h <= 3.4);
+  for (const it of tall) {
+    if (it.kind === 'platform' || r() < 0.25) continue;
+    const own = rectFor(it); if (!own) continue;
+    const len = it.h * 1.75, wid = 1.4;
+    const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => r() - 0.5);
+    for (const [dx, dz] of sides) {
+      const along = dx ? it.fd : it.fw; if (along < wid + 0.2) continue;
+      const off = (r() - 0.5) * (along - wid);
+      const st = { kind: 'stairs', h: it.h, rot: false, axis: dx ? 'x' : 'z', dir: -(dx || dz) };
+      st.fw = dx ? len : wid; st.fd = dx ? wid : len; st.w = st.fw; st.d = st.fd;
+      st.x = dx ? (dx > 0 ? own.maxX + len / 2 : own.minX - len / 2) : it.x + off;
+      st.z = dz ? (dz > 0 ? own.maxZ + len / 2 : own.minZ - len / 2) : it.z + off;
+      if (tryAdd(st, 0.9, own)) break;
+    }
   }
-  return { items, place };
+  // Sprung-Stufen: stabile Kiste neben hohen Objekten (per Sprung + Hochziehen erreichbar)
+  for (const it of items.filter(i => ['big', 'wall', 'car'].includes(i.kind) && !i.noClimb && i.h > 2.35 && i.h <= 3.4)) {
+    const own = rectFor(it); if (!own) continue;
+    const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => r() - 0.5);
+    for (const [dx, dz] of sides) {
+      const sz = 1.3, st = { kind: 'step', h: 1.3, rot: false, fw: sz, fd: sz, w: sz, d: sz };
+      const along = dx ? it.fd : it.fw; if (along < sz) continue;
+      const off = (r() - 0.5) * (along - sz);
+      st.x = dx ? (dx > 0 ? own.maxX + sz / 2 : own.minX - sz / 2) : it.x + off;
+      st.z = dz ? (dz > 0 ? own.maxZ + sz / 2 : own.minZ - sz / 2) : it.z + off;
+      if (tryAdd(st, 0.9, own)) break;
+    }
+  }
+  // Stege zwischen zwei hohen Flächen (nur wenn man bequem darunter durchlaufen kann)
+  const tops = items.filter(it => ['big', 'wall', 'platform'].includes(it.kind) && !it.noClimb && it.h >= 2.5 && it.h <= 3.4);
+  let bridges = 0;
+  for (let i = 0; i < tops.length && bridges < 2; i++) for (let j = i + 1; j < tops.length && bridges < 2; j++) {
+    const A = rectFor(tops[i]), B = rectFor(tops[j]); if (!A || !B) continue;
+    const h = Math.min(tops[i].h, tops[j].h); if (Math.abs(tops[i].h - tops[j].h) > 0.4) continue;
+    const ox0 = Math.max(A.minX, B.minX), ox1 = Math.min(A.maxX, B.maxX), oz0 = Math.max(A.minZ, B.minZ), oz1 = Math.min(A.maxZ, B.maxZ);
+    let br = null;
+    if (ox1 - ox0 >= 1.4) { const gap = B.minZ > A.maxZ ? [A.maxZ, B.minZ] : A.minZ > B.maxZ ? [B.maxZ, A.minZ] : null; if (gap && gap[1] - gap[0] >= 1.5 && gap[1] - gap[0] <= 8) br = { x: (ox0 + ox1) / 2, z: (gap[0] + gap[1]) / 2, fw: 1.4, fd: gap[1] - gap[0] + 0.4 }; }
+    else if (oz1 - oz0 >= 1.4) { const gap = B.minX > A.maxX ? [A.maxX, B.minX] : A.minX > B.maxX ? [B.maxX, A.minX] : null; if (gap && gap[1] - gap[0] >= 1.5 && gap[1] - gap[0] <= 8) br = { x: (gap[0] + gap[1]) / 2, z: (oz0 + oz1) / 2, fw: gap[1] - gap[0] + 0.4, fd: 1.4 }; }
+    if (!br) continue;
+    const it = { kind: 'bridge', ...br, w: br.fw, d: br.fd, h, rot: false };
+    const Rr = { minX: it.x - it.fw / 2, maxX: it.x + it.fw / 2, minZ: it.z - it.fd / 2, maxZ: it.z + it.fd / 2 };
+    if (Rr.maxZ > -0.8) continue;
+    items.push(it); bridges++;
+  }
 }
 
 function fillArena(place) {
@@ -242,6 +352,7 @@ function fillArena(place) {
   if (r() < 0.8) place('car', full, { margin: 1.8 });
   place('car', full, { margin: 1.8 });
   for (let i = 0; i < 3; i++) place('crate', full, { margin: 1.5 });
+  for (let i = 0; i < 2; i++) place('stack', full, { margin: 1.5 });
   place('fence', full, { margin: 1.6 });
   for (let i = 0; i < 2; i++) place('low', full, { margin: 1.6 });
   place('low', { x0: 2.5, x1: 7, z0: -6.5, z1: -3.5 }, { margin: 1.2 });
@@ -259,8 +370,31 @@ function buildWorld(items) {
   const world = new World({ minX: -HALF_X, maxX: HALF_X, minZ: -HALF_Z, maxZ: HALF_Z });
   const cols = [];
   for (const it of all) {
+    if (it.shape === 'car') {
+      // Karosserie (halbe Höhe, ganze Länge) + Kabine (mittig, volle Höhe)
+      const alongZ = it.fd >= it.fw, L = alongZ ? it.fd : it.fw, hb = it.h * 0.52;
+      const body = { type: 'box', min: { x: it.x - it.fw / 2, y: 0, z: it.z - it.fd / 2 }, max: { x: it.x + it.fw / 2, y: hb, z: it.z + it.fd / 2 }, kind: it.kind, item: it };
+      const c0 = -0.05 * L * (it.mirror ? -1 : 1), cl = L * 0.5;
+      const cab = alongZ
+        ? { type: 'box', min: { x: it.x - it.fw / 2 + 0.1, y: hb, z: it.z + c0 - cl / 2 }, max: { x: it.x + it.fw / 2 - 0.1, y: it.h, z: it.z + c0 + cl / 2 }, kind: it.kind, item: it, sub: true }
+        : { type: 'box', min: { x: it.x + c0 - cl / 2, y: hb, z: it.z - it.fd / 2 + 0.1 }, max: { x: it.x + c0 + cl / 2, y: it.h, z: it.z + it.fd / 2 - 0.1 }, kind: it.kind, item: it, sub: true };
+      world.add(body); world.add(cab); cols.push(body, cab);
+      continue;
+    }
+    if (it.kind === 'stack') {
+      const alongX = !it.rot, sgn = it.mirror ? -1 : 1;
+      const halves = alongX
+        ? [[it.x - sgn * it.fw / 4, it.fw / 2, it.fd, 1.2], [it.x + sgn * it.fw / 4, it.fw / 2, it.fd, 2.4]]
+        : [[it.x, it.fw, it.fd / 2, 1.2, it.z + sgn * it.fd / 4], [it.x, it.fw, it.fd / 2, 2.4, it.z - sgn * it.fd / 4]];
+      for (const [x, w, d, h, z] of halves) { const zz = z ?? it.z; const c = { type: 'box', min: { x: x - w / 2, y: 0, z: zz - d / 2 }, max: { x: x + w / 2, y: h, z: zz + d / 2 }, kind: 'stack', item: it }; world.add(c); cols.push(c); }
+      continue;
+    }
+    if (it.kind === 'bridge') {
+      const c = { type: 'box', min: { x: it.x - it.fw / 2, y: it.h - 0.2, z: it.z - it.fd / 2 }, max: { x: it.x + it.fw / 2, y: it.h, z: it.z + it.fd / 2 }, kind: 'bridge', item: it, overhead: true };
+      world.add(c); cols.push(c); continue;
+    }
     const c = {
-      type: it.kind === 'ramp' ? 'ramp' : 'box',
+      type: it.kind === 'ramp' || it.kind === 'stairs' ? 'ramp' : 'box',
       min: { x: it.x - it.fw / 2, y: 0, z: it.z - it.fd / 2 }, max: { x: it.x + it.fw / 2, y: it.h, z: it.z + it.fd / 2 },
       axis: it.axis, dir: it.dir, kind: it.kind, item: it,
     };
@@ -292,7 +426,7 @@ export function buildArena(theme, seed) {
   let fallback = null;
   for (let attempt = 0; attempt < 30; attempt++) {
     const r = rng(seed + attempt * 7919);
-    const { items, place } = plan(r, theme);
+    const { items, place, tryAdd, rectFor, placePlatform } = plan(r, theme);
     let W = buildWorld(items);
     const ps = { x: 0, z: -SPAWN_Z }, bs = { x: 0, z: SPAWN_Z };
     let ok = false;
@@ -321,6 +455,26 @@ export function buildArena(theme, seed) {
     fillArena(place);
     let F = buildWorld(items);
     if (!F.nav.connected(ps, bs) || !F.nav.connected(ps, { x: 0, z: 0 })) { items.length = base; F = buildWorld(items); }
+    // Höhere Ebenen: hohe Plattform, Treppen, Stege – danach nochmal prüfen, ob man von oben zu früh sieht
+    const base2 = items.length;
+    placePlatform({ x0: -14, x1: 14, z0: -24, z1: -5 }, 2.8, 3.6, 5.6);
+    addAccess(items, tryAdd, rectFor, r);
+    F = buildWorld(items);
+    for (let k = 0; k < 14; k++) {
+      const line = F.nav.connected(ps, bs) ? openSightline(F.world, F.nav) : [{ x: 0, z: 0 }, { x: 0, z: 0 }];
+      if (!line) break;
+      const extra = items.slice(base2);
+      if (!extra.length) break;
+      // Das Zusatz-Objekt entfernen, das am nächsten an der Sichtlinie liegt
+      const pts = line.map(p => p.z < 0 ? p : { x: -p.x, z: -p.z });
+      let best = null, bd = Infinity;
+      for (const it of extra) for (const p of pts) { const d = Math.hypot(it.x - p.x, it.z - p.z); if (d < bd) { bd = d; best = it; } }
+      const rm = [best];
+      if (best.kind === 'platform' || best.kind === 'ramp') for (const it of extra) if ((it.kind === 'platform' || it.kind === 'ramp') && Math.hypot(it.x - best.x, it.z - best.z) < 6) rm.push(it);
+      for (const it of rm) { const i = items.indexOf(it); if (i >= 0) items.splice(i, 1); }
+      F = buildWorld(items);
+    }
+    if (openSightline(F.world, F.nav) || !F.nav.connected(ps, bs)) { items.length = base2; F = buildWorld(items); }
     return Object.assign(finishArena(theme, r, F.world, F.nav, F.cols), { attempts: attempt + 1, safe: true });
   }
   const f = fallback; // sollte praktisch nie passieren
@@ -329,16 +483,21 @@ export function buildArena(theme, seed) {
 
 function finishArena(theme, r, world, nav, cols) {
   const group = new THREE.Group();
-  const groundMat = toon('#ffffff', { map: tex({ vorstadt: 'grass', schulhof: 'asphalt', supermarkt: 'tiles', akw: 'concrete' }[theme]) });
+  const groundMat = toon({ vorstadt: '#e6f0dc', schulhof: '#b9bac4', supermarkt: '#e2ddd0', akw: '#b8b5a8' }[theme], { map: tex({ vorstadt: 'grass', schulhof: 'asphalt', supermarkt: 'tiles', akw: 'concrete' }[theme]), rough: 0.9 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(HALF_X * 2, HALF_Z * 2), groundMat);
   ground.rotation.x = -Math.PI / 2; group.add(ground);
   const outer = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), toon({ vorstadt: '#6cc24a', schulhof: '#7ab85a', supermarkt: '#9c9c9c', akw: '#a8a58f' }[theme]));
   outer.rotation.x = -Math.PI / 2; outer.position.y = -0.02; group.add(outer);
   decorateGround(group, theme, r);
+  const built = new Map();
   for (const c of cols) {
     const it = c.item;
+    if (built.has(it)) { c.mesh = built.get(it); continue; }
     let obj;
-    if (it.kind === 'ramp') {
+    if (it.kind === 'stairs') obj = stairs(it, theme);
+    else if (it.kind === 'step') obj = stepBox(null, it.fw, it.fd, it.h, theme);
+    else if (it.kind === 'bridge') obj = bridge(it, theme);
+    else if (it.kind === 'ramp') {
       const len = it.axis === 'x' ? it.w : it.d, width = it.axis === 'x' ? it.d : it.w;
       obj = wedge(len, it.h, width, { vorstadt: '#c98a4b', schulhof: '#e05a5a', supermarkt: '#8a93a6', akw: '#7d8795' }[theme]);
       if (it.axis === 'x') { if (it.dir < 0) obj.rotation.y = Math.PI; } else obj.rotation.y = it.dir > 0 ? -Math.PI / 2 : Math.PI / 2;
@@ -347,9 +506,9 @@ function finishArena(theme, r, world, nav, cols) {
       if (it.rot) obj.rotation.y = Math.PI / 2;
       if (it.mirror) obj.rotation.y += Math.PI;
     }
-    obj.position.set(it.x, 0, it.z);
+    if (it.kind !== 'stairs' && it.kind !== 'bridge') obj.position.set(it.x, 0, it.z);
     group.add(obj);
-    c.mesh = obj;
+    c.mesh = obj; built.set(it, obj);
   }
   const wallMat = { vorstadt: toon('#ffffff', { map: tex('planks') }), schulhof: toon('#ffffff', { map: tex('brick') }), supermarkt: toon('#ffffff', { map: tex('wallpaper') }), akw: toon('#ffffff', { map: tex('hazard') }) }[theme];
   for (const c of world.colliders) if (c.perimeter) {

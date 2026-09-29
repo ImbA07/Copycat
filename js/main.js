@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { settings, profile, saveProfile, T, SCORE, FOV_HORIZONTAL } from './config.js';
 import { Input } from './input.js';
-import { ComicRenderer, LAYER_FX } from './toon.js';
+import { ComicRenderer, LAYER_FX, shadows } from './toon.js';
 import { buildArena, THEMES, THEME_NAMES } from './arena.js';
 import { buildMango, buildCopycat, buildViewmodel } from './characters.js';
 import { loadAssets } from './assets.js';
@@ -14,7 +14,6 @@ import { Dialog } from './dialog.js';
 import { UI } from './ui.js';
 import { leaderboard } from './leaderboard.js';
 import { raySphere, rayCylinder } from './world.js';
-import { VOICE } from './voiceManifest.js';
 
 const DEG = Math.PI / 180;
 const vfov = (h, aspect) => 2 * Math.atan(Math.tan(h * DEG / 2) / aspect) / DEG;
@@ -27,8 +26,12 @@ class Game {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 600);
     this.scene.add(this.camera);
-    const hemi = new THREE.HemisphereLight('#ffffff', '#b7a98c', 1.6); this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight('#fff4dc', 2.2); sun.position.set(30, 60, 20); this.scene.add(sun);
+    const hemi = new THREE.HemisphereLight('#cfe8ff', '#b59f7a', 0.85); this.scene.add(hemi);
+    const sun = this.sun = new THREE.DirectionalLight('#fff0d6', 2.3); sun.position.set(28, 42, 18);
+    sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.04; sun.shadow.radius = 3;
+    Object.assign(sun.shadow.camera, { left: -36, right: 36, top: 36, bottom: -36, near: 5, far: 140 });
+    this.scene.add(sun, sun.target);
+    this.scene.fog = new THREE.Fog('#bfe0f7', 90, 380);
     this.input = new Input(this.canvas);
     this.ui = new UI(this.input);
     this.effects = new Effects(this.scene, this.camera, this.ui.el.float);
@@ -37,6 +40,7 @@ class Game {
     this.mango = buildMango(); this.copycat = buildCopycat();
     for (const rig of [this.mango, this.copycat]) rig.onMagDrop = obj => this.effects.dropMag(obj);
     this.scene.add(this.mango.root, this.copycat.root);
+    shadows(this.mango.root, true, false); shadows(this.copycat.root, true, false);
     this.player = new Actor(this.mango, 'mango');
     this.bot = new Actor(this.copycat, 'copycat');
     this.viewmodel = buildViewmodel(); this.viewmodel.visible = false; this.camera.add(this.viewmodel);
@@ -99,6 +103,7 @@ class Game {
   loadArena(theme, seed) {
     if (this.arena) { this.scene.remove(this.arena.group); this.arena.dispose(); }
     this.arena = buildArena(theme, seed);
+    shadows(this.arena.group);
     this.scene.add(this.arena.group);
     this.effects?.clearDecals();
   }
@@ -238,7 +243,9 @@ class Game {
     if (isP && this.adsT > 0.5) muzzle.copy(this.camera.position).addScaledVector(dir, 0.8).add(new THREE.Vector3(0, -0.05, 0));
     else A.rig.rifle.muzzle.getWorldPosition(muzzle);
     this.effects.tracer(muzzle, end, isP ? 'player' : 'bot');
-    if (!(isP && this.adsT > 0.5)) this.effects.muzzle(muzzle, 0.45);
+    if (!(isP && this.adsT > 0.5)) this.effects.muzzle(muzzle, dir, 1);
+    else this.effects.flashLight(muzzle, '#ffc070', 3, 0.05);
+    { const rt = new THREE.Vector3(-Math.cos(A.yaw), 0, Math.sin(A.yaw)); const sp = new THREE.Vector3(A.pos.x, A.eyeY - 0.35, A.pos.z).addScaledVector(rt, 0.15); if (!(isP && this.adsT > 0.5)) this.effects.shell(sp, rt); }
     this.killcam.tracers.push({ t: this.roundTime, from: muzzle.clone(), to: new THREE.Vector3(end.x, end.y, end.z), who: isP ? 'player' : 'bot' });
     const dist = Math.hypot(other.pos.x - A.pos.x, other.pos.z - A.pos.z);
     if (hit && hit.actor) {
@@ -277,7 +284,7 @@ class Game {
       const kill = !target.alive;
       this.ui.hitmarker(kill ? 'kill' : head ? 'head' : 'body');
       audio.play(head ? 'headshot' : 'hit', null, 0.9);
-      this.effects.damageNumber(point, done, head);
+      this.effects.damageNumber(point, done, head); this.effects.hitSplat(point, head);
       if (head) { this.effects.pow(point, POW_WORDS[(Math.random() * POW_WORDS.length) | 0]); }
       if (!kill) {
         this.dialog.say('hurt', { chance: 0.25, cooldown: 9 });
@@ -285,7 +292,7 @@ class Game {
       this.brain && (this.brain.lastSeen = { ...from.pos }, this.brain.lastSeenTime = this.roundTime);
     } else {
       this.stats.dmgTaken += done;
-      this.ui.hurt(done); audio.play('hurt', null, 0.8);
+      this.ui.hurt(done); audio.play('hurt', null, 0.8); this.effects.hitSplat(point, head, ['#ff8a1f', '#ffd83a', '#ff4f4f']);
       this.effects.shake = Math.max(this.effects.shake, 0.25);
       if (target.alive) {
         this.dialog.say('hit_player', { chance: 0.2, cooldown: 10 });
@@ -341,11 +348,11 @@ class Game {
         case 'reload': audio.play('reload', isP ? null : pos, 0.8); if (isP) { this.brain?.model.onReload(ev.ammoLeft); this.brain?.hear(A.pos, 16); this.tutFlags.reload = true; } break;
         case 'heal': audio.play('syringe', isP ? null : pos); if (isP) { this.brain?.model.onHeal(ev.hp); this.brain?.hear(A.pos, 16); this.tutFlags.heal = true; } break;
         case 'stab': audio.play('click', isP ? null : pos, 0.6); break;
-        case 'healtick': if (isP) audio.play('heal', null, 0.5); break;
+        case 'healtick': if (isP) audio.play('heal', null, 0.5); this.effects.healSparkles(A.pos); break;
         case 'jump': audio.play('jump', isP ? null : pos, 0.6); if (isP) { this.brain?.model.onTrick('jump'); this.tutFlags.jump = true; } break;
-        case 'slide': audio.play('slide', isP ? null : pos); if (isP) { this.brain?.model.onTrick('slide'); this.tutFlags.slide = true; } break;
-        case 'dash': audio.play('dash', isP ? null : pos); if (isP) { this.brain?.model.onTrick('dash'); this.tutFlags.dash = true; } break;
-        case 'land': audio.play('land', isP ? null : pos, Math.min(1, ev.fall / 10)); break;
+        case 'slide': audio.play('slide', isP ? null : pos); this.effects.dust(A.pos, 6, 0.35); if (isP) { this.brain?.model.onTrick('slide'); this.tutFlags.slide = true; } break;
+        case 'dash': audio.play('dash', isP ? null : pos); this.effects.dashTrail(A.pos, A.dashDir, isP ? '#ffb040' : '#ff7ad0'); if (isP) { this.brain?.model.onTrick('dash'); this.tutFlags.dash = true; } break;
+        case 'land': audio.play('land', isP ? null : pos, Math.min(1, ev.fall / 10)); A.rig.land(Math.min(1, ev.fall / 12)); if (ev.fall > 6) this.effects.dust(A.pos, 4, 0.3); break;
         case 'step':
           if (isP) { if (ev.loud) this.brain?.hear(A.pos, 14); audio.play('step', null, 0.25); }
           else audio.play('step', pos, ev.loud ? 1.1 : 0.7);
@@ -401,7 +408,7 @@ class Game {
     this.state = 'intermission'; this.wantLock = false; this.input.unlock();
     const ins = this.brain.model.insights();
     const lines = [];
-    const txt = key => VOICE.copycat[key]?.[0]?.text;
+    const txt = key => this.dialog.text(key);
     if (ins.length) {
       for (const i of ins.slice(0, 3)) lines.push(txt(i.key));
       this.dialog.say(ins[0].key, { force: true });
@@ -616,7 +623,8 @@ class Game {
   // ======================= Hauptschleife =======================
   loop(now) {
     requestAnimationFrame(t => this.loop(t));
-    const rawDt = Math.min(0.05, (now - this.last) / 1000); this.last = now;
+    const rawDt = Math.max(0, Math.min(0.05, (now - this.last) / 1000)); this.last = now;
+    this.autoQuality(rawDt);
     const dt = rawDt * this.timeScale;
     try { this.tick(dt, rawDt); } catch (e) { console.error(e); }
     this.input.endFrame();
@@ -678,7 +686,6 @@ class Game {
     this.recordKillcam(dt);
     P.syncRig(dt); B.syncRig(dt);
     // Treffer-Wackeln bei Copycat
-    const hf = this.copycat.hitFlash; this.copycat.body.scale.set(1 + Math.max(0, hf) * 1.2, 1 - Math.max(0, hf) * 1.2, 1 + Math.max(0, hf) * 1.2);
     this.updateCamera(rawDt);
     this.effects.update(dt);
     this.dialog.update(p => this.effects.project(p), this.headPos(this.copycat), B.alive || st === 'roundEnd');
@@ -694,6 +701,20 @@ class Game {
       const playerLost = !P.alive || this.lossReason === 'flag';
       if (!playerLost && this.roundEndT > 2.6) this.showIntermission();
       if (playerLost && this.roundEndT > 2.8) { if (this.lossReason === 'kill' && this.killcam.buf.length) this.startKillcam(); else this.gameOver(); }
+    }
+  }
+  // Ruckelt es länger, wird die Grafik automatisch etwas leichter
+  autoQuality(dt) {
+    if (!(this.state === 'playing' || this.state === 'countdown') || dt <= 0) return;
+    this.fpsAcc = (this.fpsAcc || 0) + dt; this.fpsN = (this.fpsN || 0) + 1;
+    if (this.fpsAcc < 4) return;
+    const avg = this.fpsAcc / this.fpsN; this.fpsAcc = 0; this.fpsN = 0;
+    const r = this.renderer.renderer; this.qLevel = this.qLevel || 0;
+    if (avg > 1 / 45 && this.qLevel < 3) {
+      this.qLevel++;
+      if (this.qLevel === 1) { r.setPixelRatio(Math.min(devicePixelRatio, 1)); this.renderer.resize(); }
+      if (this.qLevel === 2) { this.sun.shadow.mapSize.set(1024, 1024); this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; }
+      if (this.qLevel === 3) { r.setPixelRatio(0.75); this.renderer.resize(); }
     }
   }
   headPos(rig) { const v = new THREE.Vector3(); rig.head.getWorldPosition(v); v.y += 0.55; return v; }

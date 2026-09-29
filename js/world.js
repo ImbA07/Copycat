@@ -186,7 +186,7 @@ export class NavGrid {
       const x = b.minX + (i + 0.5) * cell, z = b.minZ + (j + 0.5) * cell;
       let top = 0, tall = false;
       for (const c of this.world.colliders) {
-        if (!c.alive) continue;
+        if (!c.alive || c.overhead) continue;
         if (x + radius <= c.min.x || x - radius >= c.max.x || z + radius <= c.min.z || z - radius >= c.max.z) continue;
         const cx = Math.min(c.max.x, Math.max(c.min.x, x)), cz = Math.min(c.max.z, Math.max(c.min.z, z));
         const t = World.topAt(c, cx, cz);
@@ -195,7 +195,7 @@ export class NavGrid {
       }
       const edge = x - radius < b.minX || x + radius > b.maxX || z - radius < b.minZ || z + radius > b.maxZ;
       this.height[j * w + i] = top;
-      this.blocked[j * w + i] = (edge || tall || top > 2.6) ? 1 : 0;
+      this.blocked[j * w + i] = (edge || tall || top > 3.5) ? 1 : 0;
     }
   }
   toCell(x, z) {

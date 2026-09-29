@@ -12,7 +12,7 @@ export const T = {
   hp: 100,
   walk: 5.2, sprint: 8.2, crouch: 2.6, adsWalk: 3.4,
   accelGround: 70, accelAir: 14, friction: 12,
-  gravity: 21, jumpV: 7.6,
+  gravity: 21, jumpV: 8.0, mantle: 0.95,
   slideV: 11.5, slideTime: 0.85, slideCooldown: 0.5,
   dashV: 24, dashTime: 0.12, dashCharges: 2, dashRecharge: 5,
   stepHeight: 0.5,

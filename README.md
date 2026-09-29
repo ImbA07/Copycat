@@ -43,7 +43,7 @@ was er über dich lernt (`js/learner.js`):
   plus eigene Skelett-Steuerung (IK) für Zielen, Nachladen, Spritze, Ducken, Rutschen und Springen (`js/characters.js`).
 - Comic-Look: Toon-Shading plus Umrisse per Nachbearbeitung (`js/toon.js`).
 - Soundeffekte und Musik werden live im Browser erzeugt (`js/audio.js`).
-- Copycats Sprüche wurden mit [Piper](https://github.com/rhasspy/piper) erzeugt (`tools/gen_voices.py`, Texte in `tools/voice_lines.json`). Mango ist stumm.
+- Copycat spricht eine live erzeugte Comic-Fantasiesprache (`audio.babble` in `js/audio.js`), die Sprüche stehen in `js/lines.js`. Mango ist stumm.
 - Bestenliste: Supabase-Tabelle `copycat_scores`, Zugriff nur über abgesicherte Datenbank-Funktionen (`supabase/copycat_leaderboard.sql`).
 
 ## Lokal starten

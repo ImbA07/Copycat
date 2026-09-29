@@ -2,7 +2,7 @@
 // Fertige Animationen (Stehen, Gehen, Jubeln, Umfallen) werden abgespielt; Zielen, Nachladen, Spritze, Ducken,
 // Rutschen und Springen werden am Skelett berechnet (Hände/Füße greifen per "IK" genau an die richtige Stelle).
 import * as THREE from 'three';
-import { toon, box, sphere, cyl, cone, LAYER_FX } from './toon.js';
+import { toon, glow, box, rbox, sphere, cyl, cone, LAYER_FX } from './toon.js';
 import { charGltf, cloneSkinned, prop } from './assets.js';
 
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z), Q = () => new THREE.Quaternion();
@@ -76,6 +76,56 @@ export function buildViewmodel() {
   return g;
 }
 
+function starMesh(r) {
+  const sh = new THREE.Shape();
+  for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2 + Math.PI / 2, rr = i % 2 ? r * 0.45 : r; sh[i ? 'lineTo' : 'moveTo'](Math.cos(a) * rr, Math.sin(a) * rr); }
+  const g = new THREE.ExtrudeGeometry(sh, { depth: r * 0.4, bevelEnabled: false }); g.center();
+  return new THREE.Mesh(g, glow('#ffe14a', 1.6));
+}
+
+// Große Comic-Augen mit Pupillen, Lidern (Blinzeln) und Augenbrauen + Mund. Liegt am Kopf-Knochen.
+function buildFace(rig, deco, cy, R, o) {
+  const eyes = [], white = toon('#ffffff', { rough: 0.25, rim: 0.1 }), pupilM = toon('#16121f', { rough: 0.2 });
+  const lidM = toon(o.lid, { unique: true });
+  for (const side of [-1, 1]) {
+    const big = o.odd && side < 0 ? 1.18 : 1;
+    const g = new THREE.Group(); g.position.set(side * R * o.eyeX, cy + R * o.eyeY, R * 1.0); deco.add(g);
+    const ball = sphere(R * o.eyeR * big, white, 0, 0, 0, 18); ball.scale.set(1, 1.15, 0.5); g.add(ball);
+    const pupil = sphere(R * o.eyeR * 0.45 * big, pupilM, 0, 0, R * o.eyeR * 0.42, 12); pupil.scale.z = 0.4; g.add(pupil);
+    const shine = sphere(R * o.eyeR * 0.12, glow('#ffffff', 1.2), R * o.eyeR * 0.15, R * o.eyeR * 0.2, R * o.eyeR * 0.78, 6); pupil.add(shine); shine.position.set(R * 0.03, R * 0.04, R * 0.02);
+    const lid = sphere(R * o.eyeR * big * 1.07, lidM, 0, 0, 0, 16); lid.scale.set(1, 1.15, 0.56); g.add(lid);
+    lid.geometry = lid.geometry.clone(); // obere Hälfte als Lid
+    const lp = lid.geometry.attributes.position; for (let i = 0; i < lp.count; i++) if (lp.getY(i) < 0) lp.setY(i, 0); lp.needsUpdate = true; lid.geometry.computeVertexNormals();
+    const brow = box(R * 0.42 * big, R * 0.09, R * 0.08, toon(o.brow), 0, R * o.eyeR * 1.35 * big, R * 0.05); g.add(brow);
+    if (o.tear && side > 0) g.add(box(R * 0.04, R * 0.22, R * 0.03, toon('#16121f'), 0, -R * o.eyeR * 1.5, R * 0.05));
+    eyes.push({ g, pupil, lid, brow, side, big });
+  }
+  const mouth = new THREE.Group(); mouth.position.set(0, cy - R * o.mouthY, R * 1.02); deco.add(mouth);
+  const mouthIn = sphere(R * 0.2, toon('#5a1522'), 0, 0, 0, 14); mouthIn.scale.set(1.4, 0.5, 0.35); mouth.add(mouthIn);
+  if (o.teeth) mouth.add(box(R * 0.36, R * 0.09, R * 0.05, '#ffffff', 0, R * 0.06, R * 0.06));
+  if (o.lips) { const lip = new THREE.Mesh(new THREE.TorusGeometry(R * 0.2, R * 0.05, 6, 16), toon(o.lips)); lip.scale.set(1.35, 0.55, 1); mouth.add(lip); }
+  rig.face = (st, dt, fl) => {
+    // Blinzeln
+    rig.blinkT -= dt;
+    if (rig.blinkT < 0) { rig.blink = 1; rig.blinkT = 2 + Math.random() * 3.5; }
+    rig.blink = Math.max(0, rig.blink - dt * 7);
+    const dead = st.dead > 0;
+    const closed = dead ? 0.85 : Math.sin(Math.min(1, rig.blink) * Math.PI);
+    const angry = rig.recoil > 0.2 || st.reload >= 0 ? 1 : 0, hurt = rig.hitReact;
+    for (const e of eyes) {
+      e.lid.scale.y = 1.15 * (0.12 + closed * 1.0); e.lid.rotation.x = -0.9 + closed * 0.9;
+      e.lid.visible = true;
+      e.pupil.position.x = (st.side || 0) * -R * 0.03; e.pupil.position.y = Math.max(-1, Math.min(1, st.pitch || 0)) * R * 0.07;
+      e.pupil.scale.setScalar(dead ? 0.6 : 1 + hurt * 0.25);
+      const tilt = (angry * 0.35 - hurt * 0.45 + (o.odd && e.side < 0 ? -0.25 : 0)) * e.side;
+      e.brow.rotation.z = tilt; e.brow.position.y = R * o.eyeR * 1.35 * e.big + hurt * R * 0.08 - angry * R * 0.03;
+    }
+    const open = Math.max(hurt, dead ? 0.6 : 0, taunting(st) ? 0.5 + Math.sin(rig.t * 12) * 0.3 : 0);
+    mouthIn.scale.set(1.4 - open * 0.5, 0.5 + open * 1.1, 0.35);
+  };
+}
+const taunting = st => !!st.taunt;
+
 export class Rig {
   constructor(gltf, spec) {
     this.spec = spec;
@@ -89,11 +139,13 @@ export class Rig {
     // Farben
     let geoH = 0;
     this.model.traverse(o => { if (o.isMesh) { o.frustumCulled = false; o.geometry.computeBoundingBox(); geoH = Math.max(geoH, o.geometry.boundingBox.max.y - o.geometry.boundingBox.min.y); } });
+    this.flashMats = [];
     const conv = m => {
       const c = spec.colors[m.name];
       if (c === null) { const h = m.clone(); h.visible = false; return h; }
-      if (c === 'stripes') return stripeMaterial(geoH || 1);
-      return toon(c || '#cccccc');
+      const mm = c === 'stripes' ? stripeMaterial(geoH || 1) : toon(c || '#cccccc', { unique: true, rim: 0.32, rough: m.name === 'Skin' ? 0.5 : 0.7 });
+      this.flashMats.push(mm);
+      return mm;
     };
     this.model.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(conv) : conv(o.material); });
     // Knochen + Ruhelage
@@ -143,8 +195,16 @@ export class Rig {
     this.t = 0; this.recoil = 0; this.hitFlash = 0; this.hitReact = 0;
     this.legYaw = 0;
     this.onMagDrop = null; this._magDropped = false; this._deadStarted = false;
+    this.jiggle = []; this.squash = 0; this.blinkT = 2 + Math.random() * 3; this.blink = 0;
+    this.prevHead = null; this.headVel = V();
+    // K.-o.-Sterne über dem Kopf
+    this.stars = new THREE.Group(); this.stars.visible = false; this.root.add(this.stars);
+    for (let i = 0; i < 5; i++) { const st = starMesh(0.09); st.userData.a = i / 5 * Math.PI * 2; this.stars.add(st); }
     this.meshes = []; this.root.traverse(o => { if (o.isMesh) this.meshes.push(o); });
   }
+
+  // Nach dem Landen kurz zusammenstauchen
+  land(strength) { this.squash = Math.min(1, Math.max(this.squash, strength)); }
 
   hitboxes(pos) {
     this.root.updateMatrixWorld(true);
@@ -165,6 +225,7 @@ export class Rig {
 
   // st: {speed, fwd, side, grounded, crouch, slide, pitch, reload, syringe, taunt, dead, sprint}
   animate(st, dt) {
+    dt = Math.max(0, dt || 0);
     this.t += dt;
     const B = this.bones, s = this.s, K = this.k, H = this.spec.height;
     const dead = st.dead > 0, taunt = st.taunt;
@@ -204,7 +265,7 @@ export class Rig {
       B.Torso.rotateX(-st.pitch * 0.3);
       B.Neck.rotateX(-st.pitch * 0.4 + (st.slide ? 0.3 : 0));
     }
-    this.hitReact = Math.max(0, this.hitReact - dt * 6);
+    this.hitReact = Math.min(1, Math.max(0, this.hitReact - dt * 6));
     // Füße: in der Luft anziehen, beim Rutschen ein Bein nach vorn
     if (!fullBody) {
       if (!st.grounded && !st.slide) { for (const f of [B.FootL, B.FootR]) { f.position.y += 0.3 * H * K * 0.5; f.position.z += 0.08 * K; } B.FootL.position.z += 0.12 * K; }
@@ -226,8 +287,11 @@ export class Rig {
     const shoulder = B.UpperArmR.getWorldPosition(V()).applyMatrix4(inv);
     this.gunPivot.position.set(0, shoulder.y + 0.02, 0.02);
     this.gunPivot.rotation.set(fullBody ? 0 : -st.pitch, 0, 0);
-    this.gun.position.set(-0.1, -0.1, 0.34 - this.recoil * 0.06);
+    this.gun.position.set(-0.1, -0.1, 0.34 - this.recoil * 0.06); this.gun.rotation.y = 0;
     this.gun.rotation.set(-this.recoil * 0.08, 0, 0);
+    const bob = st.speed > 0.4 && st.grounded ? Math.sin(this.t * (6 + st.speed)) * 0.012 * Math.min(1, st.speed / 5) : Math.sin(this.t * 1.8) * 0.004;
+    this.gun.position.y += bob; this.gun.rotation.z = st.speed > 0.4 ? Math.sin(this.t * (3 + st.speed * 0.5)) * 0.04 : 0;
+    if (st.sprint) { this.gun.rotation.x += 0.35; this.gun.rotation.y = 0.4; this.gun.position.y -= 0.08; }
     let leftTarget = null, rightTarget = null, gunVisible = !fullBody;
     this.spareMag.visible = false; this.syringe.visible = false;
     if (this.mag) this.mag.visible = true;
@@ -298,42 +362,112 @@ export class Rig {
       twoBoneIK(B.UpperArmL, B.LowerArmL, B.FistL, leftTarget || inGun(this.gripL), poleL);
     }
     if (this.hitFlash > 0) this.hitFlash -= dt;
-    this.scarfTail && (this.scarfTail.rotation.z = 0.3 + Math.sin(this.t * 8) * 0.25 * Math.min(1, st.speed / 4));
+    // Treffer-Aufblitzen
+    const fl = Math.max(0, this.hitFlash) / 0.12;
+    for (const m of this.flashMats) { m.emissive?.setRGB(fl * 0.9, fl * 0.85, fl * 0.8); }
+    // Stauchen (Landen / Treffer)
+    this.squash = Math.max(0, this.squash - dt * 5);
+    const sq = this.squash * 0.14 + fl * 0.06;
+    this.body.scale.set(1 + sq, 1 - sq, 1 + sq);
+    // Kopfbewegung messen -> Haare/Schal schwingen nach
+    const hp = this.head.getWorldPosition(V());
+    if (this.prevHead && dt > 0) { const v = hp.clone().sub(this.prevHead).divideScalar(dt); this.headVel.lerp(v, Math.min(1, dt * 8)); }
+    this.prevHead = hp;
+    const inv2 = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
+    const lv = this.headVel.clone().transformDirection(inv2).multiplyScalar(this.headVel.length());
+    for (const j of this.jiggle) {
+      const tx = Math.max(-0.6, Math.min(0.6, lv.z * j.k + (j.base?.x || 0))), tz = Math.max(-0.6, Math.min(0.6, -lv.x * j.k + (j.base?.z || 0)));
+      j.vx = (j.vx || 0) + ((tx - j.obj.rotation.x) * j.stiff - (j.vx || 0) * j.damp) * dt;
+      j.vz = (j.vz || 0) + ((tz - j.obj.rotation.z) * j.stiff - (j.vz || 0) * j.damp) * dt;
+      j.obj.rotation.x += j.vx * dt; j.obj.rotation.z += j.vz * dt;
+    }
+    // Gesicht
+    this.face?.(st, dt, fl);
+    // K.-o.-Sterne
+    this.stars.visible = dead && st.dead > 0.6;
+    if (this.stars.visible) {
+      const h = this.head.getWorldPosition(V()).applyMatrix4(inv2);
+      this.stars.position.set(h.x, h.y + this.headR * 1.1, h.z);
+      for (const c of this.stars.children) { const a = c.userData.a + this.t * 3; c.position.set(Math.cos(a) * this.headR * 1.2, Math.sin(this.t * 6 + c.userData.a) * 0.05, Math.sin(a) * this.headR * 1.2); c.rotation.y = this.t * 4; }
+    }
   }
 }
+
+// Geschwungene, sich verjüngende Haarsträhne mit Farbverlauf (Ansatz -> Spitze)
+function hairLock(points, r0, r1, colA, colB, flatten = 0.62, seg = 22, radial = 9) {
+  const curve = new THREE.CatmullRomCurve3(points);
+  const frames = curve.computeFrenetFrames(seg, false);
+  const pos = [], col = [], idx = [];
+  const cA = new THREE.Color(colA), cB = new THREE.Color(colB), c = new THREE.Color();
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg, p = curve.getPointAt(t), r = (r0 + (r1 - r0) * Math.pow(t, 1.6)) * (i === seg ? 0.2 : 1) * (i === 0 ? 0.85 : 1);
+    const N = frames.normals[i], Bn = frames.binormals[i];
+    c.copy(cA).lerp(cB, Math.pow(t, 0.9));
+    for (let j = 0; j < radial; j++) {
+      const a = j / radial * Math.PI * 2;
+      const x = Math.cos(a) * r, y = Math.sin(a) * r * flatten;
+      pos.push(p.x + N.x * x + Bn.x * y, p.y + N.y * x + Bn.y * y, p.z + N.z * x + Bn.z * y);
+      col.push(c.r, c.g, c.b);
+    }
+  }
+  for (let i = 0; i < seg; i++) for (let j = 0; j < radial; j++) {
+    const a = i * radial + j, b = i * radial + (j + 1) % radial, cc = (i + 1) * radial + j, d = (i + 1) * radial + (j + 1) % radial;
+    idx.push(a, cc, b, b, cc, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+}
+const hairMat = () => toon('#ffffff', { vertexColors: true, rough: 0.45, rim: 0.4 });
 
 // ---------------- Mango ----------------
 export function buildMango() {
   const rig = new Rig(charGltf('Casual_Bald'), {
     height: 2.0, bodyR: 0.34,
-    colors: { Shirt: '#22b8a7', Skin: '#ffd83a', Pants: '#6a3fb5', Belt: '#8a4a22', Face: '#16121f' },
+    colors: { Shirt: '#1fb5a3', Skin: '#ffd23a', Pants: '#6a3fb5', Belt: '#7a3f1a', Face: '#ffd23a' },
   });
   const deco = new THREE.Group(); deco.scale.setScalar(rig.k); rig.bones.Head.add(deco);
   const cy = 0.48 * rig.s, R = rig.headR;
-  // Riesige Mango-Mähne
-  const hairMat = toon('#ff8a1f'), hair2 = toon('#ff6a00');
-  const hair = new THREE.Group(); hair.position.set(0, cy + R * 0.5, -R * 0.12); deco.add(hair);
-  let k = 0;
-  for (let ring = 0; ring < 3; ring++) {
-    const n = [7, 10, 13][ring];
+  // --- Clowns-Frisur: große flauschige Büschel an den Seiten + hinten, Kringel-Locke oben ---
+  const HW = 0.62 * rig.s, HH = 0.48 * rig.s, HD = 0.5 * rig.s; // halbe Kopfmaße (eckiger Kopf)
+  const oranges = ['#ff7a18', '#ff8c26', '#ff6a12', '#ff9a34'].map(c => toon(c, { rough: 0.78, rim: 0.45 }));
+  const puff = (cx, cyy, cz, rad, n, seed) => {
+    const g = new THREE.Group(); g.position.set(cx, cyy, cz); deco.add(g);
+    let r = seed;
+    const rnd = () => { r = (r * 9301 + 49297) % 233280; return r / 233280; };
     for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + ring * 0.3, tilt = [0.3, 0.9, 1.45][ring];
-      const len = [0.6, 0.52, 0.4][ring] * (0.85 + (k++ % 3) * 0.12);
-      const spike = cone(0.11, len, (i + ring) % 2 ? hairMat : hair2, 0, 0, 0, 7);
-      spike.geometry = spike.geometry.clone(); spike.geometry.translate(0, len / 2, 0);
-      const d = V(Math.cos(a) * Math.sin(tilt), Math.cos(tilt), Math.sin(a) * Math.sin(tilt));
-      spike.quaternion.setFromUnitVectors(V(0, 1, 0), d);
-      spike.position.copy(d).multiplyScalar(R * 0.4);
-      hair.add(spike);
+      const a = rnd() * Math.PI * 2, e = (rnd() - 0.3) * 1.2, d = rad * (0.35 + rnd() * 0.45);
+      const sp = sphere(rad * (0.45 + rnd() * 0.3), oranges[i % 4], Math.cos(a) * Math.cos(e) * d, Math.sin(e) * d, Math.sin(a) * Math.cos(e) * d, 16);
+      g.add(sp);
     }
+    rig.jiggle.push({ obj: g, k: 0.05, stiff: 85 + rnd() * 30, damp: 8 });
+    return g;
+  };
+  for (const sx of [-1, 1]) {
+    puff(sx * HW * 1.12, cy + HH * 0.25, -HD * 0.1, R * 0.62, 11, sx > 0 ? 7 : 13);
+    puff(sx * HW * 0.95, cy - HH * 0.15, -HD * 0.35, R * 0.45, 7, sx > 0 ? 21 : 29);
   }
-  hair.add(sphere(R * 0.8, hairMat, 0, 0, 0, 14));
-  const leaf = sphere(0.1, toon('#3fbf4a'), 0.05, 0.68, 0, 10); leaf.scale.set(0.45, 1.3, 0.2); leaf.rotation.z = -0.5; hair.add(leaf);
-  // Clownsnase
-  deco.add(sphere(R * 0.2, toon('#ff3b3b'), 0, cy - R * 0.08, R * 0.97, 14));
+  puff(0, cy + HH * 0.35, -HD * 1.05, R * 0.66, 12, 41);
+  // Kringel-Locke oben
+  const curlG = new THREE.Group(); curlG.position.set(0, cy + HH * 0.95, HD * 0.1); deco.add(curlG);
+  const curlPts = []; for (let i = 0; i <= 16; i++) { const t = i / 16, a = t * Math.PI * 3.2; curlPts.push(V(Math.sin(a) * R * 0.28 * (1 - t * 0.6), t * R * 0.9, Math.cos(a) * R * 0.28 * (1 - t * 0.6) - R * 0.1)); }
+  curlG.add(new THREE.Mesh(hairLock(curlPts, R * 0.2, R * 0.08, '#ff6a12', '#ffa63a', 1), hairMat()));
+  rig.jiggle.push({ obj: curlG, k: 0.09, stiff: 60, damp: 5 });
+  // Mango-Blatt ganz oben
+  const leafG = new THREE.Group(); leafG.position.set(0, R * 0.9, 0); curlG.add(leafG);
+  const leaf = new THREE.Mesh(hairLock([V(0, 0, 0), V(R * 0.2, R * 0.25, 0), V(R * 0.55, R * 0.35, 0), V(R * 0.85, R * 0.2, 0)], R * 0.2, R * 0.01, '#2e9e3a', '#6ee06a', 0.25), hairMat());
+  leafG.add(leaf); leafG.add(cyl(R * 0.03, R * 0.04, R * 0.25, '#6b4a2a', 0, -R * 0.1, 0, 6));
+  rig.jiggle.push({ obj: leafG, k: 0.08, stiff: 70, damp: 6 });
+  // Gesicht
+  buildFace(rig, deco, cy, R, { eyeX: 0.36, eyeY: 0.14, eyeR: 0.27, lid: '#ffd23a', brow: '#a8420a', mouthY: 0.56, teeth: true });
+  deco.add(sphere(R * 0.2, toon('#ff2d3b', { rough: 0.18, rim: 0.2 }), 0, cy - R * 0.14, HD * 1.05, 18)); // Clownsnase
   // Fliege
-  const bow = new THREE.Group(); bow.position.set(0, cy - R * 1.08, R * 0.5);
-  bow.add(cone(0.06, 0.1, toon('#ff3b3b'), -0.05, 0, 0, 4).rotateZ(Math.PI / 2)); bow.add(cone(0.06, 0.1, toon('#ff3b3b'), 0.05, 0, 0, 4).rotateZ(-Math.PI / 2));
+  const bow = new THREE.Group(); bow.position.set(0, cy - R * 1.1, R * 0.5);
+  const bowM = toon('#ff2d3b', { rough: 0.35 });
+  for (const sx of [-1, 1]) { const w = sphere(0.06, bowM, sx * 0.06, 0, 0, 10); w.scale.set(1.3, 0.8, 0.5); bow.add(w); }
+  bow.add(sphere(0.028, bowM, 0, 0, 0.01, 8));
   deco.add(bow);
   rig.name = 'Mango';
   rig.meshes = []; rig.root.traverse(o => { if (o.isMesh) rig.meshes.push(o); });
@@ -344,7 +478,7 @@ export function buildMango() {
 export function buildCopycat() {
   const rig = new Rig(charGltf('OldClassy_Male'), {
     height: 2.25, bodyR: 0.34, gunTint: '#ffc0e0',
-    colors: { Shirt: 'stripes', Skin: '#fbfbff', Pants: '#1d1b24', Belt: '#1d1b24', Detail: '#1d1b24', Face: '#16121f', Hair: '#16121f', Hat: null },
+    colors: { Shirt: 'stripes', Skin: '#fbfbff', Pants: '#1d1b24', Belt: '#1d1b24', Detail: '#1d1b24', Face: '#fbfbff', Hair: '#16121f', Hat: null },
   });
   const deco = new THREE.Group(); deco.scale.setScalar(rig.k); rig.bones.Head.add(deco);
   const cy = 0.48 * rig.s, R = rig.headR;
@@ -353,15 +487,16 @@ export function buildCopycat() {
   const b1 = sphere(R * 0.72, toon('#e8223a'), 0, 0, 0, 16); b1.scale.set(1, 0.3, 1); beret.add(b1);
   beret.add(cyl(0.012, 0.012, 0.07, '#e8223a', 0, R * 0.25, 0, 6));
   deco.add(beret);
-  // Rote Lippen + Wangen
-  deco.add(sphere(R * 0.11, toon('#e8223a'), 0, cy - R * 0.62, R * 0.9, 10));
-  deco.add(sphere(R * 0.12, toon('#ff8fb0'), -R * 0.62, cy - R * 0.28, R * 0.72, 8));
-  deco.add(sphere(R * 0.12, toon('#ff8fb0'), R * 0.62, cy - R * 0.28, R * 0.72, 8));
+  rig.jiggle.push({ obj: beret, k: 0.04, stiff: 80, damp: 7, base: { z: 0.42 } });
+  // Pantomimen-Gesicht: schiefe große Augen mit Träne, rote Lippen, Wangen
+  buildFace(rig, deco, cy, R, { eyeX: 0.36, eyeY: 0.16, eyeR: 0.25, odd: true, lid: '#fbfbff', brow: '#16121f', tear: true, mouthY: 0.66, lips: '#e8223a' });
+  for (const sx of [-1, 1]) { const ch = sphere(R * 0.13, toon('#ff8fb0'), sx * R * 0.62, cy - R * 0.3, R * 0.72, 10); ch.scale.z = 0.4; deco.add(ch); }
   // Roter Schal
   const scarf = new THREE.Mesh(new THREE.TorusGeometry(R * 0.5, R * 0.15, 8, 18), toon('#e8223a'));
   scarf.rotation.x = Math.PI / 2; scarf.position.set(0, cy - R * 1.12, 0.02); scarf.scale.set(1.25, 1.1, 1); deco.add(scarf);
-  const tail = box(0.08, 0.26, 0.03, '#e8223a', 0.08, cy - R * 1.4, R * 0.5); deco.add(tail);
-  rig.scarfTail = tail;
+  const tailG = new THREE.Group(); tailG.position.set(0.08, cy - R * 1.15, R * 0.5); deco.add(tailG);
+  const tail = box(0.08, 0.28, 0.03, '#e8223a', 0, -0.14, 0); tailG.add(tail);
+  rig.jiggle.push({ obj: tailG, k: 0.12, stiff: 40, damp: 4, base: { z: 0.25 } });
   rig.name = 'Copycat';
   rig.meshes = []; rig.root.traverse(o => { if (o.isMesh) rig.meshes.push(o); });
   return rig;
