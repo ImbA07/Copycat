@@ -213,7 +213,7 @@ export class Actor {
 
   animState() {
     return {
-      speed: this.speed, fwd: this.localMove.fwd, side: Math.sign(this.localMove.side),
+      speed: this.speed, fwd: this.localMove.fwd, side: this.localMove.side,
       grounded: this.onGround, crouch: this.slideT > 0 ? 0 : this.crouch, slide: this.slideT > 0,
       pitch: this.pitch, reload: this.reloadT >= 0 ? this.reloadT / T.reloadTime : -1,
       syringe: this.syringeT >= 0 ? this.syringeT / T.syringeAnim : -1,

@@ -162,7 +162,7 @@ class Game {
     audio.setMode('game'); audio.tension = 0.15;
     this.lockGame();
     this.lastBeep = 4;
-    setTimeout(() => { if (this.state === 'countdown' || this.state === 'playing') this.dialog.say('round_start', { chance: this.round === 1 ? 1 : 0.6 }); }, 1800);
+    setTimeout(() => { if (this.state === 'countdown' || this.state === 'playing') this.dialog.say('round_start', { chance: this.round === 1 ? 1 : 0.35 }); }, 1800);
   }
   lockGame() {
     this.wantLock = true; this.input.enabled = true;
@@ -307,7 +307,7 @@ class Game {
       this.effects.damageNumber(point, done, head); this.effects.hitSplat(point, head);
       if (head) { this.effects.pow(point, POW_WORDS[(Math.random() * POW_WORDS.length) | 0]); }
       if (!kill) {
-        this.dialog.say('hurt', { chance: 0.25, cooldown: 9 });
+        this.dialog.say('hurt', { chance: 0.15, cooldown: 20 });
       }
       this.brain && (this.brain.lastSeen = { ...from.pos }, this.brain.lastSeenTime = this.roundTime);
     } else {
@@ -315,7 +315,7 @@ class Game {
       this.ui.hurt(done); audio.play('hurt', null, 0.8); this.effects.hitSplat(point, head, ['#ff8a1f', '#ffd83a', '#ff4f4f']);
       this.effects.shake = Math.max(this.effects.shake, 0.25);
       if (target.alive) {
-        this.dialog.say('hit_player', { chance: 0.2, cooldown: 10 });
+        this.dialog.say('hit_player', { chance: 0.12, cooldown: 22 });
       }
     }
     this.handleEvents(ev);
@@ -406,7 +406,7 @@ class Game {
   onBotTaunt(type) {
     const b = this.bot.pos;
     audio.play('kazoo', { x: b.x, y: b.y + 2, z: b.z }, 1.2);
-    this.dialog.say('taunt', { chance: 0.7, cooldown: 8 });
+    this.dialog.say('taunt', { chance: 0.5, cooldown: 18 });
   }
 
   finishRound(how, head) {
@@ -426,7 +426,7 @@ class Game {
     this.brain.model.onRoundEnd(this.flag.active);
     audio.play('win');
     this.ui.center(how === 'flag' ? 'FLAGGE!' : 'GEWONNEN!', `+${sum.toLocaleString('de-DE')}`, 2);
-    setTimeout(() => this.dialog.say('lose', { chance: 0.6, force: true }), 500);
+    setTimeout(() => this.dialog.say('lose', { chance: 0.45 }), 500);
   }
 
   showIntermission() {
@@ -435,10 +435,16 @@ class Game {
     const ins = this.brain.model.insights();
     const lines = [];
     const txt = key => this.dialog.text(key);
+    // Gesprochen wird die Erkenntnis, die am längsten nicht dran war (sonst ein allgemeiner Spruch)
+    this.spokenIns = this.spokenIns || {};
+    let speak = 'learn_nothing';
     if (ins.length) {
       for (const i of ins.slice(0, 3)) lines.push(txt(i.key));
-      this.dialog.say(ins[0].key, { force: true });
-    } else { lines.push(txt('learn_nothing')); this.dialog.say('learn_nothing', { force: true }); }
+      const cand = ins.slice(0, 4).sort((a, b) => (this.spokenIns[a.key] || 0) - (this.spokenIns[b.key] || 0))[0];
+      speak = (this.spokenIns[cand.key] || 0) > this.round - 3 && Math.random() < 0.6 ? 'inter_generic' : cand.key;
+      if (speak !== 'inter_generic') this.spokenIns[cand.key] = this.round;
+    } else lines.push(txt('learn_nothing'));
+    if (Math.random() < 0.8 || this.round <= 2) this.dialog.say(speak, { force: true });
     const pts = d.pts.map(([l, v]) => [l, v.toLocaleString('de-DE')]);
     if (d.bonusSyr) pts.push(['💉 3× ohne Schaden: Extra-Spritze!', '']);
     this.ui.intermission({ title: d.how === 'flag' ? `RUNDE ${this.round}: FLAGGE EROBERT!` : `RUNDE ${this.round} GEWONNEN!`, points: pts, total: this.score, lines, dossier: this.brain.model.dossier() });
@@ -628,7 +634,7 @@ class Game {
       f.active = true; f.spawnT = t; f.rise = 0; this.arena.flag.group.visible = true;
       this.ui.center('🚩 FLAGGE!', '5 Sekunden allein in der Zone = Sieg', 2.2);
       audio.play('capture');
-      this.dialog.say('flag_spawn', { chance: 0.7 });
+      this.dialog.say('flag_spawn', { chance: 0.5 });
     }
     if (!f.active) return;
     f.rise = Math.min(1, f.rise + dt);

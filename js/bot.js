@@ -36,7 +36,7 @@ export class CopycatBrain {
   }
   get reaction() { return REACTION - 0.07 * this.model.late; }
   get aimErrBase() { return AIM_ERR * (1 - 0.18 * this.model.late); }
-  say(trig, opt = {}) { this.game.dialog?.say(trig, { cooldown: 12, chance: 0.75, ...opt }); }
+  say(trig, opt = {}) { this.game.dialog?.say(trig, { cooldown: 25, chance: 0.5, ...opt }); }
 
   // Mango ist gerade verwundbar (heilt / lädt nach) – nur wenn Copycat es sieht oder hört
   noticeWindow(type, dur) { this.window = { type, until: this.game.roundTime + dur }; }
@@ -56,7 +56,7 @@ export class CopycatBrain {
     let r = Math.random() * sum, plan = 'standard';
     for (const [k, w] of opts) { r -= w; if (r <= 0) { plan = k; break; } }
     // Ansage (wird gesprochen, sobald Copycat gerade nichts anderes sagt)
-    if (plan !== 'standard' && (plan !== m.plan || Math.random() < 0.35)) this.pendingSay = { trig: 'counter_' + plan, from: roundStart ? 3.5 : this.game.roundTime, until: roundStart ? 14 : this.game.roundTime + 6 };
+    if (plan !== 'standard' && (plan !== m.plan || Math.random() < 0.15)) this.pendingSay = { trig: 'counter_' + plan, from: roundStart ? 3.5 : this.game.roundTime, until: roundStart ? 14 : this.game.roundTime + 6 };
     m.plan = plan; this.planT = 0;
   }
 
@@ -315,7 +315,7 @@ export class CopycatBrain {
     const ht = m.healThreshold;
     if (!pressure && !iWeak && tac > 0.3 && m.cap > 0.35 && ht !== null && knownRecent && p.hp <= ht + 8 && p.syringes > 0) pressure = true;
     if (pressure) {
-      if (this.state !== 'push') this.say(win === 'heal' ? 'push_heal' : win === 'reload' ? 'push_reload' : 'push_low', { chance: 0.85, cooldown: 7 });
+      if (this.state !== 'push') this.say(win === 'heal' ? 'push_heal' : win === 'reload' ? 'push_reload' : 'push_low', { chance: 0.55, cooldown: 20 });
       this.setState('push'); return;
     }
     if (this.state === 'push' && this.stateT < 1.2 && (seen || t - this.lastSeenTime < 1.5)) return; // kurz dranbleiben
@@ -330,9 +330,9 @@ export class CopycatBrain {
       if (canHeal) {
         // direkt vor Mango heilen wäre tödlich – mit Taktik lieber kämpfen, wenn Mango auch wackelt
         const tooClose = seen && dist < 7 && tac > 0.35 && p.hp <= me.hp + 25;
-        if (tooClose) { if (prev !== 'fight') this.say('self_rush_low', { chance: 0.6 }); this.setState('fight'); return; }
+        if (tooClose) { if (prev !== 'fight') this.say('self_rush_low', { chance: 0.45 }); this.setState('fight'); return; }
         const cp = this.findCover();
-        if (cp) { this.coverPoint = cp; this.wantHeal = true; this.say('self_heal', { chance: 0.6, cooldown: 15 }); this.setState('cover'); return; }
+        if (cp) { this.coverPoint = cp; this.wantHeal = true; this.say('self_heal', { chance: 0.45, cooldown: 30 }); this.setState('cover'); return; }
       } else if (tac > 0.25) { this.kite = true; if (prev !== 'fight') this.say('self_kite', { chance: 0.4, cooldown: 20 }); }
     }
     if (seen && me.reloading && dist < 20 && !pWeak) {

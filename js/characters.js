@@ -26,6 +26,7 @@ const bump = (t, a, b) => { const x = seg(t, a, b); return Math.sin(x * Math.PI)
 // ---------- IK-Helfer ----------
 const _A = V(), _B = V(), _C = V(), _T = V(), _P = V(), _E = V(), _dir = V();
 const _q1 = Q(), _q2 = Q(), _q3 = Q(), _qI = Q(), _yAxis = V(0, 1, 0);
+const SPINE_KEEP = [['Hips', 0.5], ['Abdomen', 0.35], ['Torso', 0.3], ['Neck', 0.25], ['Head', 0.25]];
 function twoBoneIK(upper, lower, end, target, pole) {
   upper.getWorldPosition(_A); lower.getWorldPosition(_B); end.getWorldPosition(_C);
   const la = _A.distanceTo(_B), lb = _B.distanceTo(_C);
@@ -150,10 +151,10 @@ export class Rig {
     };
     this.model.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(conv) : conv(o.material); });
     // Knochen + Ruhelage
-    this.bones = {}; this.rest = [];
+    this.bones = {}; this.rest = []; this.restQ = {};
     this.model.traverse(o => {
       if (o.isBone || /_end$/.test(o.name)) this.bones[o.name] = o;
-      if (o.isBone) this.rest.push([o, o.position.clone(), o.quaternion.clone()]);
+      if (o.isBone) { this.rest.push([o, o.position.clone(), o.quaternion.clone()]); this.restQ[o.name] = o.quaternion.clone(); }
     });
     const B = this.bones;
     this.head = new THREE.Object3D(); this.head.position.set(0, 0.0048, 0.0004); B.Head.add(this.head);
@@ -167,15 +168,20 @@ export class Rig {
     // Waffe (Drehpunkt an der Schulter, neigt sich mit dem Blick)
     this.gunPivot = new THREE.Group(); this.root.add(this.gunPivot);
     this.gun = new THREE.Group(); this.gunPivot.add(this.gun);
-    this.gunModel = prop('blaster/blaster-d', { length: 0.8 });
+    this.gunModel = prop('blaster/blaster-d', { length: 0.95 });
     this.gunModel.rotation.y = Math.PI; // Lauf zeigt nach +Z (Blickrichtung)
     this.gun.add(this.gunModel);
     if (spec.gunTint) this.gunModel.traverse(o => { if (o.isMesh) { o.material = o.material.clone(); o.material.color.set(spec.gunTint); } });
     this.mag = null; this.gunModel.traverse(o => { if (o.name === 'magazine') this.mag = o; });
-    this.muzzle = new THREE.Object3D(); this.muzzle.position.set(0, 0.04, 0.42); this.gun.add(this.muzzle);
+    this.muzzle = new THREE.Object3D(); this.muzzle.position.set(0, 0.25, 0.47); this.gun.add(this.muzzle);
     this.rifle = { muzzle: this.muzzle };
-    this.gripR = V(0, -0.09, -0.1); this.gripL = V(0, -0.04, 0.2);
-    this.magPoint = V(0, -0.16, 0.03); this.chargePoint = V(0.06, 0.06, -0.08);
+    // Griffpunkte in Waffen-Koordinaten (vermessen am Modell): Pistolengriff, Vorderschaft, Magazin, Spannhebel
+    this.gripR = V(0, 0.12, -0.16); this.gripL = V(0, 0.1, 0.19);
+    this.magPoint = V(0, 0.01, 0.07); this.chargePoint = V(0.09, 0.26, 0.03);
+    // Anschlag: Waffe rechts vor der Brust, Oberkörper leicht seitlich eingedreht (skaliert mit der Figurengröße)
+    const hs = spec.height / 2.0;
+    this.hold = { x: -0.17 * hs, y: -0.3 * hs, z: 0.2 * hs, yaw: 0.08, twist: -0.32 };
+    this.sprintK = 0;
     this.spareMag = prop('blaster/clip-large', { height: 0.17 }); this.spareMag.visible = false; this.root.add(this.spareMag);
     this.syringe = new THREE.Group();
     this.syringe.add(cyl(0.03, 0.03, 0.2, toon('#bff5ff', { transparent: true, opacity: 0.85 }), 0, 0, 0, 10));
@@ -271,27 +277,32 @@ export class Rig {
     const lk = this.landT < 0.42 && !air && !dead ? this.landW * Math.sin(Math.PI * this.landT / 0.42) * (moving ? 0.45 : 0.9) : 0;
     if (lk > 0.01) Bl.add(M.land, 0.12 + this.landT * 0.6, lk * Bl.w / Math.max(0.05, 1 - lk));
     const R = Bl.result();
-    // Anwenden
+    // Anwenden. Oberkörper nur teilweise übernehmen: die Profi-Animationen sind für "normale" Menschen,
+    // unsere Comic-Figuren mit großem Kopf wirken damit zu gebückt -> aufrechter, sportlicher Stand.
     QB.forEach((n, i) => B[n].quaternion.fromArray(R, i * 4));
+    if (!dead && taunt?.type !== 'dance') for (const [n, keep] of SPINE_KEEP) { const rq = this.restQ[n]; B[n].quaternion.slerp(rq, 1 - keep); }
     const rest = M._rest;
+    // Laufrichtung: Schrittbahn der Füße wird um legYaw gedreht (um die Körpermitte), die Hüfte dreht teilweise mit
     const cs = Math.cos(this.legYaw), sn = Math.sin(this.legYaw);
-    const rot = (x, z, rx, rz, k = 1) => { const dx = x - rx, dz = z - rz; return [rx + (dx * cs + dz * sn) * k, rz + (-dx * sn + dz * cs) * k]; };
+    const cx = rest.body.x, cz = rest.body.z;
+    const rot = (x, z) => { const dx = x - cx, dz = z - cz; return [cx + dx * cs + dz * sn, cz - dx * sn + dz * cs]; };
     {
-      const [bx, bz] = rot(R[LAYOUT.O_BODY], R[LAYOUT.O_BODY + 2], rest.body.x, rest.body.z);
-      B.Body.position.set(bx, R[LAYOUT.O_BODY + 1], bz);
+      const bx = R[LAYOUT.O_BODY], bz = R[LAYOUT.O_BODY + 2];
+      const [rx, rz] = rot(bx, bz);
+      B.Body.position.set(rx, R[LAYOUT.O_BODY + 1], rz);
     }
-    const yawQ = _q1.setFromAxisAngle(_yAxis, this.legYaw * 0.7);
+    const yawQ = _q1.setFromAxisAngle(_yAxis, this.legYaw);
+    const gaitNow = GAIT.reduce((a, n) => a + (this.lw[n] || 0), 0);
     ['L', 'R'].forEach((side, i) => {
       const o = LAYOUT.O_FOOT + i * 7, rf = side === 'L' ? rest.footL : rest.footR;
-      const lat = 1 - 0.25 * Math.abs(sn); // seitlich etwas kürzere Schritte
-      let [fx, fz] = rot(R[o], R[o + 2], rf.x, rf.z, lat);
-      // Beim Seitwärtslaufen nicht über Kreuz treten
-      if (side === 'L') fx = Math.max(fx, rf.x * 0.45); else fx = Math.min(fx, rf.x * 0.45);
+      // Stand etwas schmaler (Idle-Animation steht sehr breitbeinig), Schritte seitlich etwas kürzer
+      let fx = rf.x + (R[o] - rf.x) * (1 - 0.45 * (1 - gaitNow)), fz = rf.z + (R[o + 2] - rf.z) * (1 - 0.2 * Math.abs(sn));
+      [fx, fz] = rot(fx, fz);
       B['Foot' + side].position.set(fx, R[o + 1], fz);
       B['Foot' + side].quaternion.fromArray(R, o + 3).premultiply(yawQ);
       const po = LAYOUT.O_POLE + i * 3;
-      const [px, pz] = rot(R[po], R[po + 2], rf.x, rf.z);
-      B['PoleTarget' + side].position.set(px * 0.5 + R[po] * 0.5, R[po + 1], pz * 0.5 + R[po + 2] * 0.5);
+      const [px, pz] = rot(R[po], R[po + 2]);
+      B['PoleTarget' + side].position.set(px, R[po + 1], pz);
     });
     // Treffer: kurzer Ruck im Oberkörper (aus der Treffer-Animation, draufaddiert)
     if (this.hitT < M.hit.dur && !dead) {
@@ -311,6 +322,7 @@ export class Rig {
     }
 
     // ----- 2) Körperhaltung (Blick, Lehnen, Hüfte dreht mit den Beinen) -----
+    this.sprintK += ((st.sprint && moving && st.reload < 0 && st.syringe < 0 ? 1 : 0) - this.sprintK) * Math.min(1, dt * 9);
     const crouch = st.slide ? 1 : c;
     if (taunt?.type === 'crouchspam') B.Body.position.y -= ((Math.sin(taunt.t * 14) + 1) / 2) * 0.33 * H * K;
     // Beschleunigung spüren: nach vorn/zur Seite lehnen
@@ -321,16 +333,21 @@ export class Rig {
     this.accLean.f += (Math.max(-1, Math.min(1, af / 40)) - this.accLean.f) * Math.min(1, dt * 8);
     this.accLean.s += (Math.max(-1, Math.min(1, as / 40)) - this.accLean.s) * Math.min(1, dt * 8);
     if (!fullBody) {
-      B.Body.rotateY(this.legYaw * 0.4);
-      B.Abdomen.rotateY(-this.legYaw * 0.25);
-      B.Torso.rotateY(-this.legYaw * 0.15);
+      // Hüfte dreht mit den Beinen, Oberkörper dreht zurück -> Schultern und Waffe bleiben zum Ziel
+      const hip = Math.max(-0.75, Math.min(0.75, this.legYaw)) * Math.min(1, gaitNow + 0.2);
+      B.Body.rotateY(hip);
+      B.Abdomen.rotateY(-hip * 0.55);
+      B.Torso.rotateY(-hip * 0.45);
       // Laufzyklen beugen den Oberkörper stark vor – im Kampf etwas aufrechter, rückwärts leicht zurück
       let gaitW = 0; for (const n of GAIT) gaitW += this.lw[n] || 0;
-      const lean = st.slide ? -0.2 : (st.sprint ? 0.1 : -0.16) * Math.min(1, gaitW) - (mdir < 0 ? 0.12 : 0) * gaitW + this.accLean.f * 0.18;
+      const lean = st.slide ? -0.2 : (st.sprint ? 0.14 : 0.02) * Math.min(1, gaitW) - (mdir < 0 ? 0.1 : 0) * gaitW + this.accLean.f * 0.16 - 0.06 * (1 - gaitW);
       B.Abdomen.rotateX(lean - this.hitReact * 0.25);
       B.Abdomen.rotateZ(this.accLean.s * 0.14);
       B.Torso.rotateX(-st.pitch * 0.3);
       B.Neck.rotateX(-st.pitch * 0.4 + (st.slide ? 0.3 : 0));
+      // Schützen-Haltung: Oberkörper leicht eingedreht (linke Schulter vor), Kopf schaut weiter geradeaus
+      const tw = this.hold.twist * (1 - this.sprintK) * (st.reload >= 0 || st.syringe >= 0 ? 0.5 : 1);
+      B.Torso.rotateY(tw); B.Neck.rotateY(-tw * 0.8);
     }
     this.hitReact = Math.min(1, Math.max(0, this.hitReact - dt * 6));
     this.model.updateMatrixWorld(true);
@@ -346,13 +363,14 @@ export class Rig {
     this.root.updateMatrixWorld(true);
     const inv = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
     const shoulder = B.UpperArmR.getWorldPosition(V()).applyMatrix4(inv);
-    this.gunPivot.position.set(0, shoulder.y + 0.02, 0.02);
-    this.gunPivot.rotation.set(fullBody ? 0 : -st.pitch, 0, 0);
-    this.gun.position.set(-0.1, -0.1, 0.34 - this.recoil * 0.06); this.gun.rotation.y = 0;
-    this.gun.rotation.set(-this.recoil * 0.08, 0, 0);
-    const bob = st.speed > 0.4 && st.grounded ? Math.sin(this.t * (6 + st.speed)) * 0.012 * Math.min(1, st.speed / 5) : Math.sin(this.t * 1.8) * 0.004;
-    this.gun.position.y += bob; this.gun.rotation.z = st.speed > 0.4 ? Math.sin(this.t * (3 + st.speed * 0.5)) * 0.04 : 0;
-    if (st.sprint) { this.gun.rotation.x += 0.35; this.gun.rotation.y = 0.4; this.gun.position.y -= 0.08; }
+    this.gunPivot.position.set(0, shoulder.y, 0.02);
+    this.gunPivot.rotation.set(fullBody ? 0 : -st.pitch * (1 - this.sprintK * 0.7), 0, 0);
+    const hd = this.hold, sk = this.sprintK;
+    // Normal: Anschlag rechts. Sprint: Waffe schräg vor der Brust (Lauf nach links unten)
+    this.gun.position.set(hd.x * (1 - sk) + 0.03 * sk, hd.y - 0.1 * sk, hd.z - this.recoil * 0.07 + 0.03 * sk);
+    this.gun.rotation.set(-this.recoil * 0.09 + 0.45 * sk, hd.yaw * (1 - sk) + 0.95 * sk, -0.25 * sk);
+    const bob = st.speed > 0.4 && st.grounded ? Math.sin(this.t * (6 + st.speed)) * 0.014 * Math.min(1, st.speed / 5) : Math.sin(this.t * 1.8) * 0.004;
+    this.gun.position.y += bob; this.gun.rotation.z += st.speed > 0.4 ? Math.sin(this.t * (3 + st.speed * 0.5)) * 0.035 : 0;
     let leftTarget = null, rightTarget = null, gunVisible = !fullBody;
     this.spareMag.visible = false; this.syringe.visible = false;
     if (this.mag) this.mag.visible = true;
@@ -422,7 +440,7 @@ export class Rig {
     this.gunModel.visible = this.gun.visible;
     // ----- 5) Arme (IK an die Waffe) -----
     if (!fullBody) {
-      const poleR = this.local(-0.7, this.shoulderY - 0.9, -0.3), poleL = this.local(0.7, this.shoulderY - 0.9, -0.1);
+      const poleR = this.local(-0.9, this.shoulderY - 0.6, -0.25), poleL = this.local(0.55, this.shoulderY - 1.0, 0.1);
       twoBoneIK(B.UpperArmR, B.LowerArmR, B.FistR, rightTarget || inGun(this.gripR), poleR);
       twoBoneIK(B.UpperArmL, B.LowerArmL, B.FistL, leftTarget || inGun(this.gripL), poleL);
     }
